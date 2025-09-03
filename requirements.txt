@@ -1,0 +1,26 @@
+# Core dependencies
+requests>=2.32.0
+python-dotenv>=1.0.0
+
+# Broker APIs
+upstox-python-sdk>=2.17.0
+kiteconnect>=4.0.0
+
+# Data visualization
+matplotlib>=3.7.0
+pandas>=2.0.0
+numpy>=1.24.0
+
+# GUI
+# tkinter  # Usually comes with Python
+
+# WebSocket support (for live data)
+websocket-client>=1.6.0
+
+# Logging and utilities
+logging
+# threading
+# queue
+# collections
+# datetime
+# time
