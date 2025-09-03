@@ -815,8 +815,8 @@ class TkinterChartApp:
     def __init__(self, chart_visualizer):
         self.chart = chart_visualizer
         self.root = tk.Tk()
-        self.root.title("Live Market Data Chart")
-        self.root.geometry("1200x800")
+        self.root.title("Live Market Data Chart - 2x2 Grid Layout")
+        self.root.geometry("1400x900")
         
         self.setup_ui()
         
@@ -861,14 +861,51 @@ class TkinterChartApp:
         self.status_label = ttk.Label(control_frame, text="Status: Stopped")
         self.status_label.pack(side=tk.LEFT, padx=(20, 0))
         
-        # Chart frame
-        chart_frame = ttk.Frame(main_frame)
-        chart_frame.pack(fill=tk.BOTH, expand=True)
+        # Grid frame for 2x2 layout
+        grid_frame = ttk.Frame(main_frame)
+        grid_frame.pack(fill=tk.BOTH, expand=True)
         
-        # Embed matplotlib figure
-        self.canvas = FigureCanvasTkAgg(self.chart.fig, chart_frame)
+        # Configure grid weights for equal distribution
+        grid_frame.grid_rowconfigure(0, weight=1)
+        grid_frame.grid_rowconfigure(1, weight=1)
+        grid_frame.grid_columnconfigure(0, weight=1)
+        grid_frame.grid_columnconfigure(1, weight=1)
+        
+        # Grid 1 (Top-Left): Intraday Price Chart
+        self.grid1_frame = ttk.LabelFrame(grid_frame, text="Intraday Price Chart", padding=5)
+        self.grid1_frame.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+        
+        # Embed matplotlib figure in grid 1
+        self.canvas = FigureCanvasTkAgg(self.chart.fig, self.grid1_frame)
         self.canvas.draw()
         self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        
+        # Grid 2 (Top-Right): Placeholder for future use
+        self.grid2_frame = ttk.LabelFrame(grid_frame, text="Grid 2 - Available", padding=5)
+        self.grid2_frame.grid(row=0, column=1, sticky="nsew", padx=2, pady=2)
+        
+        # Add placeholder content to grid 2
+        placeholder2 = ttk.Label(self.grid2_frame, text="Available for future charts\nor data displays", 
+                               justify="center", font=("Arial", 12))
+        placeholder2.pack(expand=True)
+        
+        # Grid 3 (Bottom-Left): Placeholder for future use
+        self.grid3_frame = ttk.LabelFrame(grid_frame, text="Grid 3 - Available", padding=5)
+        self.grid3_frame.grid(row=1, column=0, sticky="nsew", padx=2, pady=2)
+        
+        # Add placeholder content to grid 3
+        placeholder3 = ttk.Label(self.grid3_frame, text="Available for future charts\nor data displays", 
+                               justify="center", font=("Arial", 12))
+        placeholder3.pack(expand=True)
+        
+        # Grid 4 (Bottom-Right): Placeholder for future use
+        self.grid4_frame = ttk.LabelFrame(grid_frame, text="Grid 4 - Available", padding=5)
+        self.grid4_frame.grid(row=1, column=1, sticky="nsew", padx=2, pady=2)
+        
+        # Add placeholder content to grid 4
+        placeholder4 = ttk.Label(self.grid4_frame, text="Available for future charts\nor data displays", 
+                               justify="center", font=("Arial", 12))
+        placeholder4.pack(expand=True)
         
     def start_chart(self):
         """Start the chart"""
