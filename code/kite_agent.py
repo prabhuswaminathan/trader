@@ -3,6 +3,8 @@ import threading
 import time
 from kiteconnect import KiteConnect, KiteTicker
 from broker_agent import BrokerAgent
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional
 
 logging.basicConfig(level=logging.DEBUG)
 
@@ -187,3 +189,146 @@ class KiteAgent(BrokerAgent):
                 self.logger.error(f"Error disconnecting WebSocket: {e}")
         self.is_connected = False
         self.logger.info("Disconnected from live data feed")
+
+    def get_ohlc_intraday_data(self, instrument: str, interval: str = "1minute", 
+                              start_time: Optional[datetime] = None, 
+                              end_time: Optional[datetime] = None) -> List[Dict]:
+        """
+        Get intraday OHLC data from Kite
+        
+        Args:
+            instrument (str): Instrument identifier (e.g., "NSE:NIFTY 50")
+            interval (str): Data interval ("1minute", "3minute", "5minute", "15minute", "30minute", "60minute")
+            start_time (datetime, optional): Start time for data
+            end_time (datetime, optional): End time for data
+            
+        Returns:
+            List[Dict]: List of OHLC data dictionaries
+        """
+        try:
+            # Set default time range if not provided
+            if end_time is None:
+                end_time = datetime.now()
+            if start_time is None:
+                start_time = end_time - timedelta(days=1)  # Default to last 24 hours
+            
+            # Convert interval to Kite format
+            interval_map = {
+                "1minute": "minute",
+                "3minute": "3minute", 
+                "5minute": "5minute",
+                "15minute": "15minute",
+                "30minute": "30minute",
+                "60minute": "60minute"
+            }
+            kite_interval = interval_map.get(interval, "minute")
+            
+            # Get historical data from Kite
+            historical_data = self.kite.historical_data(
+                instrument_token=self._get_instrument_token(instrument),
+                from_date=start_time,
+                to_date=end_time,
+                interval=kite_interval
+            )
+            
+            # Convert to standard format
+            ohlc_data = []
+            for candle in historical_data:
+                ohlc_data.append({
+                    'timestamp': candle['date'],
+                    'open': float(candle['open']),
+                    'high': float(candle['high']),
+                    'low': float(candle['low']),
+                    'close': float(candle['close']),
+                    'volume': float(candle['volume'])
+                })
+            
+            self.logger.info(f"Retrieved {len(ohlc_data)} intraday candles for {instrument}")
+            return ohlc_data
+            
+        except Exception as e:
+            self.logger.error(f"Error getting intraday data for {instrument}: {e}")
+            return []
+
+    def get_ohlc_historical_data(self, instrument: str, interval: str = "day", 
+                                start_time: Optional[datetime] = None, 
+                                end_time: Optional[datetime] = None) -> List[Dict]:
+        """
+        Get historical OHLC data from Kite
+        
+        Args:
+            instrument (str): Instrument identifier (e.g., "NSE:NIFTY 50")
+            interval (str): Data interval ("day", "week", "month")
+            start_time (datetime, optional): Start time for data
+            end_time (datetime, optional): End time for data
+            
+        Returns:
+            List[Dict]: List of OHLC data dictionaries
+        """
+        try:
+            # Set default time range if not provided
+            if end_time is None:
+                end_time = datetime.now()
+            if start_time is None:
+                start_time = end_time - timedelta(days=365)  # Default to last year
+            
+            # Convert interval to Kite format
+            interval_map = {
+                "day": "day",
+                "week": "week", 
+                "month": "month"
+            }
+            kite_interval = interval_map.get(interval, "day")
+            
+            # Get historical data from Kite
+            historical_data = self.kite.historical_data(
+                instrument_token=self._get_instrument_token(instrument),
+                from_date=start_time,
+                to_date=end_time,
+                interval=kite_interval
+            )
+            
+            # Convert to standard format
+            ohlc_data = []
+            for candle in historical_data:
+                ohlc_data.append({
+                    'timestamp': candle['date'],
+                    'open': float(candle['open']),
+                    'high': float(candle['high']),
+                    'low': float(candle['low']),
+                    'close': float(candle['close']),
+                    'volume': float(candle['volume'])
+                })
+            
+            self.logger.info(f"Retrieved {len(ohlc_data)} historical candles for {instrument}")
+            return ohlc_data
+            
+        except Exception as e:
+            self.logger.error(f"Error getting historical data for {instrument}: {e}")
+            return []
+
+    def _get_instrument_token(self, instrument: str) -> int:
+        """
+        Get instrument token from instrument identifier
+        
+        Args:
+            instrument (str): Instrument identifier (e.g., "NSE:NIFTY 50")
+            
+        Returns:
+            int: Instrument token
+        """
+        try:
+            # For Nifty 50, return the standard token
+            if "NIFTY 50" in instrument.upper():
+                return 256265
+            elif "NIFTY BANK" in instrument.upper():
+                return 260105
+            else:
+                # For other instruments, you might need to fetch from instruments list
+                # This is a simplified implementation
+                self.logger.warning(f"Unknown instrument: {instrument}, using default Nifty token")
+                return 256265
+                
+        except Exception as e:
+            self.logger.error(f"Error getting instrument token for {instrument}: {e}")
+            return 256265  # Default to Nifty 50 token

@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 from broker_agent import BrokerAgent
 from auth_handler import AuthHandler
 from upstox_client.rest import ApiException
+from datetime import datetime, timedelta
+from typing import List, Dict, Optional
 
 auth_event = threading.Event()
 logging.basicConfig(level= logging.DEBUG)
@@ -84,6 +86,119 @@ class UpstoxAgent(BrokerAgent):
             logger.info(api_response)
         except ApiException as e:
             print("Exception when calling OrderApi->get_order_book: %s\n" % e)        
+
+    def get_ohlc_intraday_data(self, instrument: str, interval: str = "1minute", 
+                              start_time: Optional[datetime] = None, 
+                              end_time: Optional[datetime] = None) -> List[Dict]:
+        """
+        Get intraday OHLC data from Upstox (current trading day only)
+        
+        Args:
+            instrument (str): Instrument identifier (e.g., "NSE_INDEX|Nifty 50")
+            interval (str): Data interval ("1minute", "5minute", "15minute", "30minute", "60minute")
+            start_time (datetime, optional): Not used for intraday (Upstox limitation)
+            end_time (datetime, optional): Not used for intraday (Upstox limitation)
+            
+        Returns:
+            List[Dict]: List of OHLC data dictionaries for current trading day
+            
+        Note:
+            Upstox intraday API only provides data for the current trading day.
+            start_time and end_time parameters are ignored.
+        """
+        try:
+            api_instance = upstox_client.HistoryApi(upstox_client.ApiClient(configuration=self.configuration))
+            
+            # Get intraday candle data (current trading day only)
+            # Note: Upstox intraday API doesn't accept date parameters
+            api_response = api_instance.get_intra_day_candle_data(
+                instrument_key=instrument,
+                interval=interval,
+                api_version=api_version
+            )
+            
+            # Parse response and convert to standard format
+            ohlc_data = []
+            if hasattr(api_response, 'data') and api_response.data:
+                for candle in api_response.data.candles:
+                    ohlc_data.append({
+                        'timestamp': datetime.fromisoformat(candle[0].replace('Z', '+00:00')),
+                        'open': float(candle[1]),
+                        'high': float(candle[2]),
+                        'low': float(candle[3]),
+                        'close': float(candle[4]),
+                        'volume': float(candle[5]) if len(candle) > 5 else 0
+                    })
+            
+            logger.info(f"Retrieved {len(ohlc_data)} intraday candles for {instrument}")
+            return ohlc_data
+            
+        except ApiException as e:
+            logger.error(f"Exception when calling HistoryApi->get_intra_day_candle_data: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Error getting intraday data for {instrument}: {e}")
+            return []
+
+    def get_ohlc_historical_data(self, instrument: str, interval: str = "day", 
+                                start_time: Optional[datetime] = None, 
+                                end_time: Optional[datetime] = None) -> List[Dict]:
+        """
+        Get historical OHLC data from Upstox
+        
+        Args:
+            instrument (str): Instrument identifier (e.g., "NSE_INDEX|Nifty 50")
+            interval (str): Data interval ("day", "week", "month")
+            start_time (datetime, optional): Start time for data
+            end_time (datetime, optional): End time for data
+            
+        Returns:
+            List[Dict]: List of OHLC data dictionaries
+        """
+        try:
+            api_instance = upstox_client.HistoryApi(upstox_client.ApiClient(configuration=self.configuration))
+            
+            # Set default time range if not provided
+            if end_time is None:
+                end_time = datetime.now()
+            if start_time is None:
+                start_time = end_time - timedelta(days=365)  # Default to last year
+            
+            # Format dates for API
+            to_date = end_time.strftime("%Y-%m-%d")
+            from_date = start_time.strftime("%Y-%m-%d")
+            
+            # Get historical candle data
+            api_response = api_instance.get_historical_candle_data(
+                instrument_key=instrument,
+                interval=interval,
+                to_date=to_date,
+                from_date=from_date,
+                api_version=api_version
+            )
+            
+            # Parse response and convert to standard format
+            ohlc_data = []
+            if hasattr(api_response, 'data') and api_response.data:
+                for candle in api_response.data.candles:
+                    ohlc_data.append({
+                        'timestamp': datetime.fromisoformat(candle[0].replace('Z', '+00:00')),
+                        'open': float(candle[1]),
+                        'high': float(candle[2]),
+                        'low': float(candle[3]),
+                        'close': float(candle[4]),
+                        'volume': float(candle[5]) if len(candle) > 5 else 0
+                    })
+            
+            logger.info(f"Retrieved {len(ohlc_data)} historical candles for {instrument}")
+            return ohlc_data
+            
+        except ApiException as e:
+            logger.error(f"Exception when calling HistoryApi->get_historical_candle_data: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Error getting historical data for {instrument}: {e}")
+            return []
 
     def login(self):
         logger.debug(f"==========================>Initiating Login")
