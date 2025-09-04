@@ -134,11 +134,11 @@ def fetch_and_display_intraday_data(self):
             
             # Store latest price in datawarehouse for P&L calculations
             datawarehouse.store_latest_price(primary_instrument, latest_price, latest_volume)
-            logger.info(f"Stored latest price for P&L: {primary_instrument} = {latest_price}")
+            logger.debug(f"Stored latest price for P&L: {primary_instrument} = {latest_price}")
             
             # Store the raw intraday data (without consolidation)
             self.agent.store_ohlc_data(primary_instrument, intraday_data, "intraday", 1)
-            logger.info(f"Stored {len(intraday_data)} 1-minute candles for P&L calculations")
+            logger.debug(f"Stored {len(intraday_data)} 1-minute candles for P&L calculations")
 ```
 
 #### **Simplified Timer Logic (Lines 498-510)**

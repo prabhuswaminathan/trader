@@ -166,7 +166,7 @@ def create_improved_parsing_function():
                 if match:
                     try:
                         price = float(match.group(1))
-                        logger.info(f"✅ Extracted price: {price} using pattern: {pattern}")
+                        logger.debug(f"✅ Extracted price: {price} using pattern: {pattern}")
                         break
                     except ValueError:
                         continue

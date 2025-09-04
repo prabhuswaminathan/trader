@@ -24,6 +24,7 @@ class LiveChartVisualizer:
         self.data_queue = queue.Queue()
         self.candle_data = {}  # {instrument: deque of OHLCV data}
         self.current_prices = {}  # {instrument: current price}
+        self.last_update_time = None  # Track last data update time
         
         # Tooltip functionality
         self.tooltip = None
@@ -246,6 +247,13 @@ class LiveChartVisualizer:
             # Update current price to close price
             self.current_prices[instrument_key] = candle['close']
             
+            # Update last update time
+            candle_time = candle['timestamp']
+            if isinstance(candle_time, datetime):
+                self.last_update_time = candle_time
+            else:
+                self.last_update_time = datetime.fromtimestamp(candle_time)
+            
             self.logger.debug(f"Added complete OHLC candle for {instrument_key}: O={candle['open']}, H={candle['high']}, L={candle['low']}, C={candle['close']}, V={candle['volume']}")
             
             # Chart will be updated by animation loop, no need for immediate redraw
@@ -277,8 +285,15 @@ class LiveChartVisualizer:
             for candle in consolidated_candles:
                 self.candle_data[instrument_key].append(candle)
                 self.current_prices[instrument_key] = candle['close']
+                
+                # Update last update time
+                candle_time = candle['timestamp']
+                if isinstance(candle_time, datetime):
+                    self.last_update_time = candle_time
+                else:
+                    self.last_update_time = datetime.fromtimestamp(candle_time)
             
-            self.logger.debug(f"Added {len(consolidated_candles)} consolidated candles for {instrument_key}")
+            self.logger.debug(f"Added {len(consolidated_candles)} consolidated 5-min candles from {len(candles_data)} 1-min candles for {instrument_key}")
             
             # Chart will be updated by animation loop, no need for immediate redraw
                 
@@ -346,7 +361,7 @@ class LiveChartVisualizer:
             # Sort by timestamp
             result.sort(key=lambda x: x['timestamp'])
             
-            self.logger.info(f"Consolidated {len(candles_data)} 1-min candles into {len(result)} 5-min candles")
+            self.logger.debug(f"Consolidated {len(candles_data)} 1-min candles into {len(result)} 5-min candles")
             
             return result
             
@@ -375,7 +390,7 @@ class LiveChartVisualizer:
                 'close': price,
                 'volume': volume
             })
-            self.logger.info(f"Created first candle for {instrument_key}: O={price}, H={price}, L={price}, C={price}, V={volume}")
+            self.logger.debug(f"Created first candle for {instrument_key}: O={price}, H={price}, L={price}, C={price}, V={volume}")
             
             # Immediately update the chart if it's running
             if self.is_running:
@@ -386,7 +401,13 @@ class LiveChartVisualizer:
             current_time = timestamp
             
             # Check if we need a new candle (every N minutes as configured)
-            time_diff = (current_time - last_candle['timestamp']).total_seconds()
+            last_timestamp = last_candle.get('timestamp')
+            if last_timestamp is None:
+                self.logger.warning("Last candle has no timestamp, creating new candle")
+                time_diff = float('inf')  # Force new candle creation
+            else:
+                time_diff = (current_time - last_timestamp).total_seconds()
+            
             if time_diff >= (self.candle_interval_minutes * 60):
                 # Create new candle
                 candle_data.append({
@@ -397,7 +418,7 @@ class LiveChartVisualizer:
                     'close': price,
                     'volume': volume
                 })
-                self.logger.info(f"Created new candle for {instrument_key}: O={price}, H={price}, L={price}, C={price}, V={volume}")
+                self.logger.debug(f"Created new candle for {instrument_key}: O={price}, H={price}, L={price}, C={price}, V={volume}")
                 
                 # Chart will be updated by animation loop
             else:
@@ -406,7 +427,7 @@ class LiveChartVisualizer:
                 last_candle['low'] = min(last_candle['low'], price)
                 last_candle['close'] = price
                 last_candle['volume'] += volume
-                self.logger.info(f"Updated candle for {instrument_key}: O={last_candle['open']}, H={last_candle['high']}, L={last_candle['low']}, C={last_candle['close']}, V={last_candle['volume']}")
+                self.logger.debug(f"Updated candle for {instrument_key}: O={last_candle['open']}, H={last_candle['high']}, L={last_candle['low']}, C={last_candle['close']}, V={last_candle['volume']}")
                 
                 # Chart will be updated by animation loop
     
@@ -446,7 +467,11 @@ class LiveChartVisualizer:
             # Set up axes
             self.price_ax.set_title("Nifty 50 - Intraday Candlestick Chart (5-Minute)")
             self.price_ax.set_ylabel("Price (₹)")
-            self.price_ax.set_xlabel("Time")
+            
+            # Get last update time for x-axis label
+            last_update_time = self._get_last_update_time()
+            xlabel_text = f"Time ({last_update_time})" if last_update_time else "Time"
+            self.price_ax.set_xlabel(xlabel_text)
             self.price_ax.grid(True, alpha=0.3)
             
             # Plot candlesticks for each instrument
@@ -766,6 +791,26 @@ class LiveChartVisualizer:
             except Exception as e:
                 self.logger.error(f"Error forcing chart update: {e}")
     
+    def ensure_chart_running(self):
+        """Ensure the chart is running and restart if needed"""
+        try:
+            if not self.is_running:
+                self.logger.warning("Chart is not running, restarting...")
+                self.start_chart()
+                return True
+            
+            # Check if animation is still active
+            if hasattr(self, 'ani') and self.ani and hasattr(self.ani, 'event_source'):
+                if not self.ani.event_source.is_alive():
+                    self.logger.warning("Chart animation stopped, restarting...")
+                    self.start_chart()
+                    return True
+            
+            return True
+        except Exception as e:
+            self.logger.error(f"Error ensuring chart is running: {e}")
+            return False
+    
     def refresh_chart_data(self):
         """Refresh the chart with latest data - useful for periodic updates"""
         try:
@@ -976,6 +1021,43 @@ class LiveChartVisualizer:
             
         except Exception as e:
             self.logger.error(f"Error showing tooltip: {e}")
+    
+    def _get_last_update_time(self):
+        """Get the last update time from the tracked update time"""
+        try:
+            if self.last_update_time:
+                # Format as HH:MM:SS
+                return self.last_update_time.strftime("%H:%M:%S")
+            
+            # Fallback: find the most recent timestamp from candle data
+            if not self.candle_data:
+                return None
+            
+            latest_timestamp = None
+            for instrument_key, candle_list in self.candle_data.items():
+                if candle_list:
+                    # Get the last candle (most recent)
+                    last_candle = candle_list[-1]
+                    candle_time = last_candle['timestamp']
+                    
+                    # Convert to datetime if needed
+                    if isinstance(candle_time, datetime):
+                        timestamp = candle_time
+                    else:
+                        timestamp = datetime.fromtimestamp(candle_time)
+                    
+                    if latest_timestamp is None or timestamp > latest_timestamp:
+                        latest_timestamp = timestamp
+            
+            if latest_timestamp:
+                # Format as HH:MM:SS
+                return latest_timestamp.strftime("%H:%M:%S")
+            
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Error getting last update time: {e}")
+            return None
 
 
 class TkinterChartApp:
@@ -1059,16 +1141,14 @@ class TkinterChartApp:
         self.canvas.draw()
         self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
         
-        # Grid 2 (Top-Right): Placeholder for future use
-        self.grid2_frame = ttk.LabelFrame(grid_frame, text="Grid 2 - Available", padding=5)
+        # Grid 2 (Top-Right): Strike Price Display
+        self.grid2_frame = ttk.LabelFrame(grid_frame, text="Nearest Strike Price", padding=5)
         self.grid2_frame.grid(row=0, column=1, sticky="nsew", padx=2, pady=2)
         self.grid2_frame.grid_rowconfigure(0, weight=1)
         self.grid2_frame.grid_columnconfigure(0, weight=1)
         
-        # Add placeholder content to grid 2
-        placeholder2 = ttk.Label(self.grid2_frame, text="Available for future charts\nor data displays", 
-                               justify="center", font=("Arial", 12))
-        placeholder2.grid(row=0, column=0, sticky="nsew")
+        # Add initial content to grid 2
+        self._initialize_grid2_content()
         
         # Grid 3 (Bottom-Left): Placeholder for future use
         self.grid3_frame = ttk.LabelFrame(grid_frame, text="Grid 3 - Available", padding=5)
@@ -1091,6 +1171,37 @@ class TkinterChartApp:
         placeholder4 = ttk.Label(self.grid4_frame, text="Available for future charts\nor data displays", 
                                justify="center", font=("Arial", 12))
         placeholder4.grid(row=0, column=0, sticky="nsew")
+    
+    def _initialize_grid2_content(self):
+        """Initialize Grid 2 with proper strike price display content"""
+        try:
+            # Clear any existing content
+            for widget in self.grid2_frame.winfo_children():
+                widget.destroy()
+            
+            # Title
+            title_label = ttk.Label(self.grid2_frame, text="Nearest Strike Price", 
+                                  font=("Arial", 14, "bold"))
+            title_label.pack(pady=(10, 5))
+            
+            # Initial state message
+            initial_label = ttk.Label(self.grid2_frame, 
+                                    text="Waiting for live data...", 
+                                    font=("Arial", 12),
+                                    foreground="gray")
+            initial_label.pack(pady=20)
+            
+            # Last updated
+            from datetime import datetime
+            last_updated = datetime.now().strftime("%H:%M:%S")
+            update_label = ttk.Label(self.grid2_frame, 
+                                   text=f"Initialized: {last_updated}", 
+                                   font=("Arial", 8), 
+                                   foreground="gray")
+            update_label.pack(pady=(10, 5))
+            
+        except Exception as e:
+            print(f"Error initializing Grid 2 content: {e}")
         
     def start_chart(self):
         """Start the chart"""

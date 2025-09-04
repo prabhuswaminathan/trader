@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 
 auth_event = threading.Event()
-logging.basicConfig(level= logging.DEBUG)
+logging.basicConfig(level= logging.INFO)
 logger = logging.getLogger("UpstoxAgent")
 
 api_version = "2.0"

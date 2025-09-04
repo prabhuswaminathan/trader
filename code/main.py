@@ -58,6 +58,39 @@ class MarketDataApp:
         self._initialize_agent()
         self._initialize_chart()
         
+        # Initialize timer tracking
+        self._last_strike_update = None
+        
+        # Live feed debug logging flag
+        self._live_feed_debug = False
+    
+    def _safe_datetime_diff(self, dt1, dt2, default_seconds=0):
+        """Safely calculate datetime difference, handling None values"""
+        try:
+            if dt1 is None or dt2 is None:
+                return default_seconds
+            return (dt1 - dt2).total_seconds()
+        except Exception as e:
+            logger.warning(f"Error calculating datetime difference: {e}")
+            return default_seconds
+    
+    def enable_live_feed_debug(self, enable=True):
+        """Enable or disable debug logging for live feed data"""
+        self._live_feed_debug = enable
+        logger.info(f"Live feed debug logging {'enabled' if enable else 'disabled'}")
+    
+    def _log_live_feed(self, message, level="debug"):
+        """Log live feed message based on debug setting"""
+        if self._live_feed_debug:
+            if level == "debug":
+                logger.debug(message)
+            elif level == "info":
+                logger.info(message)
+            elif level == "warning":
+                logger.warning(message)
+            elif level == "error":
+                logger.error(message)
+        
     def _initialize_agent(self):
         """Initialize the broker agent based on type"""
         try:
@@ -78,7 +111,8 @@ class MarketDataApp:
         """Initialize the chart visualizer"""
         try:
             self.chart_visualizer = LiveChartVisualizer(
-                title=f"Nifty 50 Live Data - {self.broker_type.upper()}"
+                title=f"Nifty 50 Live Data - {self.broker_type.upper()}",
+                max_candles=500  # Increased to handle full intraday dataset (288+ candles)
             )
             
             # Load historical data for context
@@ -171,7 +205,7 @@ class MarketDataApp:
     def _on_live_data(self, data):
         """Callback function to handle live data updates"""
         try:
-            logger.info(f"Received live data: {type(data)} - {str(data)[:200]}...")
+            self._log_live_feed(f"Received live data: {type(data)} - {str(data)[:200]}...")
             
             # Process data based on broker type
             if self.broker_type == "upstox":
@@ -275,14 +309,22 @@ class MarketDataApp:
             primary_instrument = list(self.instruments[self.broker_type].keys())[0]
             
             logger.info(f"Fetching intraday data for {primary_instrument}...")
+            logger.info(f"Agent type: {type(self.agent)}, Agent connected: {self.agent.is_connected if self.agent else 'No agent'}")
+            
+            # Test agent connection first
+            if not self.agent:
+                logger.error("No agent available for data fetching")
+                return False
             
             # Fetch 1-minute intraday data from broker
+            logger.info(f"Calling get_ohlc_intraday_data with instrument: {primary_instrument}")
             intraday_data = self.agent.get_ohlc_intraday_data(
                 primary_instrument, 
                 interval="1minute",
                 start_time=None,  # Will use default (last 24 hours)
                 end_time=None
             )
+            logger.info(f"get_ohlc_intraday_data returned: {len(intraday_data) if intraday_data else 0} candles")
             
             if intraday_data:
                 logger.info(f"Fetched {len(intraday_data)} 1-minute candles from broker")
@@ -301,14 +343,14 @@ class MarketDataApp:
                 self.agent.store_ohlc_data(primary_instrument, intraday_data, "intraday", 1)
                 logger.info(f"Stored {len(intraday_data)} 1-minute candles for P&L calculations")
                 
-                # Display the data in the chart (limit to last 100 candles for performance)
-                display_data = intraday_data[-100:] if len(intraday_data) > 100 else intraday_data
+                # Display all the data in the chart (no artificial limit)
+                display_data = intraday_data
                 
                 # Use the new consolidation method to properly display 5-minute candles
                 # Clear existing data and add fresh data
                 self.chart_visualizer.add_multiple_candles(primary_instrument, display_data, clear_existing=True)
                 
-                logger.info(f"Displayed {len(display_data)} intraday candles in chart (consolidated to 5-minute)")
+                logger.info(f"Displayed all {len(display_data)} intraday candles in chart (consolidated to 5-minute)")
                 
                 # Chart will be updated by animation loop, no need for force update
                 
@@ -325,7 +367,12 @@ class MarketDataApp:
         """Process Upstox live data - simplified to store only latest price for P&L calculations"""
         try:
             # Log the received data for debugging
-            logger.debug(f"Processing Upstox data: {type(data)} - {str(data)[:100]}...")
+            self._log_live_feed(f"Processing Upstox data: {type(data)} - {str(data)[:100]}...")
+            
+            # Check if data is valid
+            if data is None:
+                logger.warning("Received None data from Upstox")
+                return
             
             # Upstox data comes as Protobuf messages, extract price information
             data_str = str(data)
@@ -352,7 +399,7 @@ class MarketDataApp:
                 if price_match:
                     try:
                         price = float(price_match.group(1))
-                        logger.debug(f"Extracted price: {price} using pattern: {pattern}")
+                        self._log_live_feed(f"Extracted price: {price} using pattern: {pattern}")
                         break
                     except ValueError:
                         continue
@@ -384,14 +431,14 @@ class MarketDataApp:
                 # If no specific instrument found, use the first one (NIFTY)
                 if instrument_key is None:
                     instrument_key = list(self.instruments[self.broker_type].keys())[0]
-                    logger.debug(f"No specific instrument found, using default: {instrument_key}")
+                    self._log_live_feed(f"No specific instrument found, using default: {instrument_key}")
                 
                 # Store only the latest price in datawarehouse for P&L calculations
                 datawarehouse.store_latest_price(instrument_key, price, volume)
-                logger.info(f"✓ Updated latest price for {instrument_key}: {price} (Volume: {volume})")
+                self._log_live_feed(f"✓ Updated latest price for {instrument_key}: {price} (Volume: {volume})")
                 
                 # Update strike price display in Grid 2 (throttled to prevent flickering)
-                if not hasattr(self, '_last_strike_update') or (datetime.now() - self._last_strike_update).total_seconds() > 5:
+                if not hasattr(self, '_last_strike_update') or self._last_strike_update is None or self._safe_datetime_diff(datetime.now(), self._last_strike_update) > 5:
                     self.update_strike_price_display()
                     self._last_strike_update = datetime.now()
                 
@@ -405,6 +452,11 @@ class MarketDataApp:
     def _process_kite_data(self, data):
         """Process Kite live data - simplified to store only latest price for P&L calculations"""
         try:
+            # Check if data is valid
+            if data is None:
+                logger.warning("Received None data from Kite")
+                return
+                
             if isinstance(data, list):
                 for tick in data:
                     instrument_token = tick.get('instrument_token')
@@ -416,10 +468,10 @@ class MarketDataApp:
                         if price is not None:
                             # Store only the latest price in datawarehouse for P&L calculations
                             datawarehouse.store_latest_price(str(instrument_token), price, volume)
-                            logger.info(f"✓ Updated latest price for {instrument_token}: {price} (Volume: {volume})")
+                            self._log_live_feed(f"✓ Updated latest price for {instrument_token}: {price} (Volume: {volume})")
                             
                             # Update strike price display in Grid 2 (throttled to prevent flickering)
-                            if not hasattr(self, '_last_strike_update') or (datetime.now() - self._last_strike_update).total_seconds() > 5:
+                            if not hasattr(self, '_last_strike_update') or self._last_strike_update is None or self._safe_datetime_diff(datetime.now(), self._last_strike_update) > 5:
                                 self.update_strike_price_display()
                                 self._last_strike_update = datetime.now()
         except Exception as e:
@@ -435,7 +487,7 @@ class MarketDataApp:
             self.timer_running = True
             self.timer_thread = threading.Thread(target=self._timer_loop, daemon=True)
             self.timer_thread.start()
-            logger.info("Trading timer started (9:15 AM - 3:30 PM, every 5 minutes)")
+            logger.info("Trading timer started (9:15 AM - 3:30 PM, every 5 minutes + 10 seconds)")
             
         except Exception as e:
             logger.error(f"Failed to start timer: {e}")
@@ -455,7 +507,7 @@ class MarketDataApp:
     def _timer_loop(self):
         """Main timer loop that runs from 9:15 AM to 3:30 PM"""
         try:
-            logger.info("Timer loop started")
+            logger.info("Timer loop started - will fetch intraday data every 5 minutes + 10 seconds during market hours")
             
             while self.timer_running:
                 current_time = datetime.now().time()
@@ -463,6 +515,10 @@ class MarketDataApp:
                 # Check if we're within market hours
                 if self._is_market_hours(current_time):
                     logger.info(f"Market hours detected: {current_time.strftime('%H:%M:%S')}")
+                    
+                    # Ensure chart is still running
+                    if self.chart_visualizer:
+                        self.chart_visualizer.ensure_chart_running()
                     
                     # Fetch intraday data
                     self._fetch_intraday_data_timer()
@@ -484,7 +540,7 @@ class MarketDataApp:
         return self.market_start_time <= current_time <= self.market_end_time
     
     def _wait_for_next_interval(self):
-        """Wait for the next 5-minute interval"""
+        """Wait for the next 5-minute interval + 10 seconds"""
         try:
             current_time = datetime.now()
             
@@ -494,27 +550,28 @@ class MarketDataApp:
             
             if next_interval_minutes >= 60:
                 # Next hour
-                next_time = current_time.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+                next_time = current_time.replace(minute=0, second=10, microsecond=0) + timedelta(hours=1)
             else:
-                # Same hour
-                next_time = current_time.replace(minute=next_interval_minutes, second=0, microsecond=0)
+                # Same hour, add 10 seconds to the 5-minute mark
+                next_time = current_time.replace(minute=next_interval_minutes, second=10, microsecond=0)
             
             # Calculate sleep duration
             sleep_duration = (next_time - current_time).total_seconds()
             
             if sleep_duration > 0:
-                logger.info(f"Waiting {sleep_duration:.0f} seconds until next 5-minute interval: {next_time.strftime('%H:%M:%S')}")
+                logger.info(f"Waiting {sleep_duration:.0f} seconds until next 5-minute interval + 10s: {next_time.strftime('%H:%M:%S')}")
                 time.sleep(sleep_duration)
             
         except Exception as e:
             logger.error(f"Error calculating next interval: {e}")
-            # Fallback to fixed interval
-            time.sleep(self.timer_interval)
+            # Fallback to fixed interval + 10 seconds
+            time.sleep(self.timer_interval + 10)
     
     def _fetch_intraday_data_timer(self):
         """Fetch intraday data as part of the timer and display in chart"""
         try:
-            logger.info("Timer: Fetching intraday data...")
+            current_time = datetime.now().strftime("%H:%M:%S")
+            logger.info(f"Timer [{current_time}]: Fetching latest intraday data...")
             
             # Fetch intraday data (this will update the datawarehouse and display in chart)
             success = self.fetch_and_display_intraday_data()
@@ -523,11 +580,14 @@ class MarketDataApp:
                 # Update strike price display in Grid 2
                 self.update_strike_price_display()
                 
-                # Chart will be updated by animation loop, no need for manual refresh
+                # Ensure chart is running and force refresh to display new data
+                if self.chart_visualizer:
+                    self.chart_visualizer.ensure_chart_running()
+                    self.chart_visualizer.force_chart_update()
                 
-                logger.info("Timer: Intraday data fetched and displayed in chart")
+                logger.info(f"Timer [{current_time}]: ✓ Intraday data fetched and candlestick chart updated")
             else:
-                logger.warning("Timer: Failed to fetch intraday data")
+                logger.warning(f"Timer [{current_time}]: ⚠ Failed to fetch intraday data")
             
         except Exception as e:
             logger.error(f"Error fetching intraday data in timer: {e}")
@@ -557,7 +617,7 @@ class MarketDataApp:
             else:
                 strike_price = base_strike
             
-            logger.debug(f"Calculated nearest strike price: {current_price} -> {strike_price}")
+            self._log_live_feed(f"Calculated nearest strike price: {current_price} -> {strike_price}")
             return int(strike_price)
             
         except Exception as e:
@@ -579,8 +639,11 @@ class MarketDataApp:
                 if hasattr(self, 'chart_app') and self.chart_app:
                     self._update_grid2_strike_price(current_price, nearest_strike)
                 
-                logger.info(f"Updated strike price display: NIFTY {current_price} -> Strike {nearest_strike}")
+                self._log_live_feed(f"Updated strike price display: NIFTY {current_price} -> Strike {nearest_strike}")
             else:
+                # Update Grid 2 with no data state
+                if hasattr(self, 'chart_app') and self.chart_app:
+                    self._update_grid2_no_data()
                 logger.warning("No current NIFTY price available for strike calculation")
                 
         except Exception as e:
@@ -632,10 +695,66 @@ class MarketDataApp:
                                        foreground="gray")
                 update_label.pack(pady=(10, 5))
                 
-                logger.debug(f"Updated Grid 2 with strike price: {strike_price}")
+                self._log_live_feed(f"Updated Grid 2 with strike price: {strike_price}")
                 
         except Exception as e:
             logger.error(f"Error updating Grid 2 strike price display: {e}")
+    
+    def _update_grid2_no_data(self):
+        """Update Grid 2 with no data available state"""
+        try:
+            if hasattr(self.chart_app, 'grid2_frame'):
+                # Clear existing content
+                for widget in self.chart_app.grid2_frame.winfo_children():
+                    widget.destroy()
+                
+                # Create new content for no data state
+                import tkinter as tk
+                from tkinter import ttk
+                
+                # Title
+                title_label = ttk.Label(self.chart_app.grid2_frame, text="Nearest Strike Price", 
+                                      font=("Arial", 14, "bold"))
+                title_label.pack(pady=(10, 5))
+                
+                # No data message
+                no_data_label = ttk.Label(self.chart_app.grid2_frame, 
+                                        text="No live data available\nWaiting for market data...", 
+                                        font=("Arial", 12),
+                                        foreground="orange",
+                                        justify="center")
+                no_data_label.pack(pady=20)
+                
+                # Last updated
+                from datetime import datetime
+                last_updated = datetime.now().strftime("%H:%M:%S")
+                update_label = ttk.Label(self.chart_app.grid2_frame, 
+                                       text=f"Last check: {last_updated}", 
+                                       font=("Arial", 8), 
+                                       foreground="gray")
+                update_label.pack(pady=(10, 5))
+                
+                logger.debug("Updated Grid 2 with no data state")
+                
+        except Exception as e:
+            logger.error(f"Error updating Grid 2 no data display: {e}")
+    
+    def _initialize_chart_with_data(self):
+        """Initialize the chart with fetched data to ensure it's properly displayed"""
+        try:
+            if self.chart_visualizer:
+                # Ensure chart is running and force update to display data
+                self.chart_visualizer.ensure_chart_running()
+                self.chart_visualizer.force_chart_update()
+                
+                # Initialize Grid 2 with strike price data if available
+                self.update_strike_price_display()
+                
+                logger.info("Chart initialized with fetched data")
+            else:
+                logger.warning("Chart visualizer not available for initialization")
+        except Exception as e:
+            logger.error(f"Error initializing chart with data: {e}")
     
     def run_chart_app(self):
         """Run the chart application with GUI"""
@@ -715,7 +834,7 @@ class MarketDataApp:
             # Auto-start the chart and timer
             logger.info("Auto-starting chart and timer...")
             self.chart_app.chart.start_chart()
-            self.chart_app.status_label.config(text="Status: Running")
+            self.chart_app.status_label.config(text="Status: Running - Chart initialized with intraday data")
             self.chart_app.start_btn.config(state=tk.DISABLED)
             self.chart_app.stop_btn.config(state=tk.NORMAL)
             
@@ -724,6 +843,7 @@ class MarketDataApp:
             
             # Start the timer for automatic data fetching
             self.start_timer()
+            self.chart_app.status_label.config(text="Status: Running - Timer active (5min + 10s intervals)")
             
             # Override the window close handler to include cleanup
             def cleanup_and_close():
@@ -798,25 +918,29 @@ def main():
     try:
         # Create application with Upstox agent by default
         app = MarketDataApp(broker_type="upstox")
-        
+        app.enable_live_feed_debug(False)
         logger.info("Market Data Application initialized")
         logger.info("Available broker types: upstox, kite")
         
-        # Fetch and display historical data
-        logger.info("Fetching historical data...")
+        # Fetch and display historical data for context
+        logger.info("Fetching historical data for context...")
         if app.fetch_and_display_historical_data():
             logger.info("✓ Historical data loaded successfully")
         else:
             logger.warning("⚠ Failed to load historical data")
         
-        # Fetch and display intraday data
-        logger.info("Fetching intraday data...")
+        # Fetch and display intraday data for candlestick chart
+        logger.info("Fetching intraday data for candlestick chart...")
+        logger.info(f"Agent status: {app.get_status()}")
         if app.fetch_and_display_intraday_data():
-            logger.info("✓ Intraday data loaded successfully")
+            logger.info("✓ Intraday data loaded successfully - candlestick chart ready")
         else:
-            logger.warning("⚠ Failed to load intraday data")
+            logger.warning("⚠ Failed to load intraday data - chart may be empty")
         
         logger.info("Starting chart application...")
+        
+        # Ensure chart is properly initialized with data
+        app._initialize_chart_with_data()
         
         # Run the chart application
         app.run_chart_app()
