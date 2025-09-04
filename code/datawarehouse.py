@@ -26,6 +26,9 @@ class DataWarehouse:
         self.intraday_data: Dict[str, pd.DataFrame] = {}
         self.historical_data: Dict[str, pd.DataFrame] = {}
         
+        # Latest price storage for P&L calculations
+        self.latest_prices: Dict[str, Dict] = {}  # {instrument: {price, timestamp, volume}}
+        
         # Configuration
         self.default_interval_minutes = 5
         self.max_candles_in_memory = 1000  # Keep last 1000 candles in memory
@@ -334,6 +337,45 @@ class DataWarehouse:
             
         except Exception as e:
             self.logger.error(f"Error getting latest price for {instrument}: {e}")
+            return None
+    
+    def store_latest_price(self, instrument: str, price: float, volume: float = 0.0) -> None:
+        """
+        Store the latest price for an instrument (for P&L calculations)
+        
+        Args:
+            instrument (str): Instrument identifier
+            price (float): Latest price
+            volume (float): Latest volume (optional)
+        """
+        try:
+            with self.lock:
+                self.latest_prices[instrument] = {
+                    'price': price,
+                    'volume': volume,
+                    'timestamp': datetime.now()
+                }
+                self.logger.debug(f"Stored latest price for {instrument}: {price}")
+                
+        except Exception as e:
+            self.logger.error(f"Error storing latest price for {instrument}: {e}")
+    
+    def get_latest_price_data(self, instrument: str) -> Optional[Dict]:
+        """
+        Get the latest price data for an instrument
+        
+        Args:
+            instrument (str): Instrument identifier
+            
+        Returns:
+            Dict: {price, volume, timestamp} or None if not available
+        """
+        try:
+            with self.lock:
+                return self.latest_prices.get(instrument)
+                
+        except Exception as e:
+            self.logger.error(f"Error getting latest price data for {instrument}: {e}")
             return None
     
     def get_price_range(self, instrument: str, period_hours: int = 24) -> Tuple[Optional[float], Optional[float]]:

@@ -199,7 +199,7 @@ class LiveChartVisualizer:
                 'tick': tick_data
             })
             
-            self.logger.info(f"Processed Upstox tick for {instrument_key}: price={current_price}, volume={volume}")
+            self.logger.debug(f"Processed Upstox tick for {instrument_key}: price={current_price}, volume={volume}")
             
             # Immediately update the chart if it's running
             if self.is_running:
@@ -220,7 +220,7 @@ class LiveChartVisualizer:
         """Add a complete OHLC candle directly to the chart"""
         try:
             if instrument_key not in self.candle_data:
-                self.candle_data[instrument_key] = []
+                self.candle_data[instrument_key] = deque(maxlen=self.max_candles)
             
             # Convert timestamp to datetime if it's a string
             timestamp = ohlc_data.get('timestamp')
@@ -240,28 +240,119 @@ class LiveChartVisualizer:
                 'volume': float(ohlc_data.get('volume', 0))
             }
             
-            # Add to candle data
+            # Add to candle data (deque will automatically limit size)
             self.candle_data[instrument_key].append(candle)
             
             # Update current price to close price
             self.current_prices[instrument_key] = candle['close']
             
-            # Limit number of candles to keep chart responsive
-            max_candles = self.max_candles
-            if len(self.candle_data[instrument_key]) > max_candles:
-                self.candle_data[instrument_key] = self.candle_data[instrument_key][-max_candles:]
+            self.logger.debug(f"Added complete OHLC candle for {instrument_key}: O={candle['open']}, H={candle['high']}, L={candle['low']}, C={candle['close']}, V={candle['volume']}")
             
-            self.logger.info(f"Added complete OHLC candle for {instrument_key}: O={candle['open']}, H={candle['high']}, L={candle['low']}, C={candle['close']}, V={candle['volume']}")
-            
-            # Immediately update the chart if it's running
-            if self.is_running:
-                self._draw_charts()
-                # Force matplotlib to redraw
-                if hasattr(self, 'fig') and self.fig:
-                    self.fig.canvas.draw_idle()
+            # Chart will be updated by animation loop, no need for immediate redraw
                 
         except Exception as e:
             self.logger.error(f"Error adding complete candle: {e}")
+    
+    def add_multiple_candles(self, instrument_key, candles_data, clear_existing=True):
+        """Add multiple candles and consolidate them into the appropriate timeframe"""
+        try:
+            if not candles_data:
+                return
+            
+            if instrument_key not in self.candle_data:
+                self.candle_data[instrument_key] = deque(maxlen=self.max_candles)
+            
+            # Clear existing data if requested (for fresh updates)
+            if clear_existing:
+                self.candle_data[instrument_key].clear()
+                self.logger.info(f"Cleared existing data for {instrument_key}")
+            
+            # Sort candles by timestamp
+            sorted_candles = sorted(candles_data, key=lambda x: x.get('timestamp', datetime.now()))
+            
+            # Consolidate 1-minute candles into 5-minute candles
+            consolidated_candles = self._consolidate_candles(sorted_candles)
+            
+            # Add consolidated candles to chart
+            for candle in consolidated_candles:
+                self.candle_data[instrument_key].append(candle)
+                self.current_prices[instrument_key] = candle['close']
+            
+            self.logger.debug(f"Added {len(consolidated_candles)} consolidated candles for {instrument_key}")
+            
+            # Chart will be updated by animation loop, no need for immediate redraw
+                
+        except Exception as e:
+            self.logger.error(f"Error adding multiple candles: {e}")
+    
+    def _consolidate_candles(self, candles_data):
+        """Consolidate 1-minute candles into 5-minute candles"""
+        try:
+            if not candles_data:
+                return []
+            
+            # Group candles by 5-minute intervals
+            consolidated = {}
+            
+            for candle in candles_data:
+                # Convert timestamp to datetime if needed
+                timestamp = candle.get('timestamp')
+                if isinstance(timestamp, str):
+                    timestamp = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                elif timestamp is None:
+                    timestamp = datetime.now()
+                
+                # Round to 5-minute boundary
+                minute = timestamp.minute
+                rounded_minute = (minute // 5) * 5
+                bucket_time = timestamp.replace(minute=rounded_minute, second=0, microsecond=0)
+                
+                if bucket_time not in consolidated:
+                    consolidated[bucket_time] = []
+                
+                consolidated[bucket_time].append(candle)
+            
+            # Create consolidated candles
+            result = []
+            for bucket_time, candles in sorted(consolidated.items()):
+                if not candles:
+                    continue
+                
+                # Sort candles within the bucket by timestamp
+                candles.sort(key=lambda x: x.get('timestamp', datetime.now()))
+                
+                # Extract OHLCV values
+                opens = [float(c.get('open', 0)) for c in candles if c.get('open') is not None]
+                highs = [float(c.get('high', 0)) for c in candles if c.get('high') is not None]
+                lows = [float(c.get('low', 0)) for c in candles if c.get('low') is not None]
+                closes = [float(c.get('close', 0)) for c in candles if c.get('close') is not None]
+                volumes = [float(c.get('volume', 0)) for c in candles if c.get('volume') is not None]
+                
+                if not opens or not highs or not lows or not closes:
+                    continue
+                
+                # Create consolidated candle
+                consolidated_candle = {
+                    'timestamp': bucket_time,
+                    'open': opens[0],  # First open in the bucket
+                    'high': max(highs),  # Highest high in the bucket
+                    'low': min(lows),    # Lowest low in the bucket
+                    'close': closes[-1], # Last close in the bucket
+                    'volume': sum(volumes) if volumes else 0  # Sum of volumes
+                }
+                
+                result.append(consolidated_candle)
+            
+            # Sort by timestamp
+            result.sort(key=lambda x: x['timestamp'])
+            
+            self.logger.info(f"Consolidated {len(candles_data)} 1-min candles into {len(result)} 5-min candles")
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error consolidating candles: {e}")
+            return []
     
     def _update_candle_data(self, instrument_key, price, volume, timestamp):
         """Update candle data with new tick"""
@@ -308,9 +399,7 @@ class LiveChartVisualizer:
                 })
                 self.logger.info(f"Created new candle for {instrument_key}: O={price}, H={price}, L={price}, C={price}, V={volume}")
                 
-                # Immediately update the chart if it's running
-                if self.is_running:
-                    self._draw_charts()
+                # Chart will be updated by animation loop
             else:
                 # Update current candle
                 last_candle['high'] = max(last_candle['high'], price)
@@ -319,9 +408,7 @@ class LiveChartVisualizer:
                 last_candle['volume'] += volume
                 self.logger.info(f"Updated candle for {instrument_key}: O={last_candle['open']}, H={last_candle['high']}, L={last_candle['low']}, C={last_candle['close']}, V={last_candle['volume']}")
                 
-                # Immediately update the chart if it's running
-                if self.is_running:
-                    self._draw_charts()
+                # Chart will be updated by animation loop
     
     def _animate(self, frame):
         """Animation function to update charts"""
@@ -384,11 +471,15 @@ class LiveChartVisualizer:
             # Adjust layout
             plt.tight_layout()
             
+            # Only redraw if chart is running to prevent flickering
+            if self.is_running and hasattr(self, 'fig') and self.fig:
+                self.fig.canvas.draw_idle()
+            
         except Exception as e:
             self.logger.error(f"Error drawing charts: {e}")
     
     def _format_x_axis_time(self):
-        """Format X-axis to display time with 1-hour intervals"""
+        """Format X-axis to display time with appropriate intervals"""
         try:
             if not self.candle_data:
                 return
@@ -410,28 +501,71 @@ class LiveChartVisualizer:
             if not all_timestamps:
                 return
             
-            # Set up time formatting
-            # Major ticks every 1 hour
-            hour_locator = HourLocator(interval=1)
-            self.price_ax.xaxis.set_major_locator(hour_locator)
+            # Sort timestamps
+            all_timestamps.sort()
             
-            # Format time display as HH:MM
-            time_formatter = DateFormatter('%H:%M')
-            self.price_ax.xaxis.set_major_formatter(time_formatter)
+            # Calculate time range
+            min_time = all_timestamps[0]
+            max_time = all_timestamps[-1]
+            time_range = max_time - min_time
+            
+            # Convert to matplotlib date format
+            import matplotlib.dates as mdates
+            min_time_mpl = mdates.date2num(min_time)
+            max_time_mpl = mdates.date2num(max_time)
+            
+            # Custom formatter to convert UTC to IST for display
+            def ist_formatter(x, pos):
+                from datetime import timedelta
+                # Convert matplotlib date number to datetime
+                dt = mdates.num2date(x)
+                # Add 5 hours 30 minutes to convert UTC to IST
+                ist_dt = dt + timedelta(hours=5, minutes=30)
+                return ist_dt.strftime('%H:%M')
+            
+            # Set up time formatting based on data range
+            if time_range.total_seconds() <= 3600:  # Less than 1 hour
+                # Show 5-minute intervals
+                minute_locator = mdates.MinuteLocator(interval=5)
+                self.price_ax.xaxis.set_major_locator(minute_locator)
+            elif time_range.total_seconds() <= 14400:  # Less than 4 hours
+                # Show 15-minute intervals
+                minute_locator = mdates.MinuteLocator(interval=15)
+                self.price_ax.xaxis.set_major_locator(minute_locator)
+            else:
+                # Show 1-hour intervals
+                hour_locator = mdates.HourLocator(interval=1)
+                self.price_ax.xaxis.set_major_locator(hour_locator)
+            
+            # Apply the IST formatter
+            self.price_ax.xaxis.set_major_formatter(plt.FuncFormatter(ist_formatter))
             
             # Rotate x-axis labels for better readability
             self.price_ax.tick_params(axis='x', rotation=45)
             
             # Set x-axis limits based on data range
-            min_time = min(all_timestamps)
-            max_time = max(all_timestamps)
-            
-            # Add some padding (30 minutes on each side)
-            padding = timedelta(minutes=30)
+            # Add some padding (5% on each side)
+            padding = time_range * 0.05
             self.price_ax.set_xlim(min_time - padding, max_time + padding)
+            
+            # Force matplotlib to update the axis
+            if time_range.total_seconds() <= 3600:
+                self.price_ax.xaxis.set_major_locator(minute_locator)
+            elif time_range.total_seconds() <= 14400:
+                self.price_ax.xaxis.set_major_locator(minute_locator)
+            else:
+                self.price_ax.xaxis.set_major_locator(hour_locator)
             
         except Exception as e:
             self.logger.error(f"Error formatting X-axis time: {e}")
+            # Fallback to simple time display
+            try:
+                self.price_ax.tick_params(axis='x', rotation=45)
+                # Set a simple time formatter
+                import matplotlib.dates as mdates
+                self.price_ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+            except Exception as fallback_error:
+                self.logger.error(f"Error in fallback time formatting: {fallback_error}")
     
     def _update_y_axis_scale(self):
         """Update Y-axis scale based on current price range"""
@@ -487,15 +621,31 @@ class LiveChartVisualizer:
             if df.empty:
                 return
             
-            # Calculate candlestick width
-            candle_width = timedelta(minutes=self.candle_interval_minutes * 0.6)
+            # Sort by timestamp to ensure proper order
+            df = df.sort_values('timestamp')
+            
+            # Convert timestamps to matplotlib date format for proper plotting
+            import matplotlib.dates as mdates
+            df['timestamp_mpl'] = df['timestamp'].apply(lambda x: mdates.date2num(x) if isinstance(x, datetime) else mdates.date2num(datetime.fromtimestamp(x)))
+            
+            # Calculate candlestick width based on data frequency
+            if len(df) > 1:
+                time_diff = (df['timestamp'].iloc[1] - df['timestamp'].iloc[0]).total_seconds()
+                candle_width = time_diff * 0.8 / (24 * 3600)  # Convert to days for matplotlib
+            else:
+                candle_width = (self.candle_interval_minutes * 60) * 0.8 / (24 * 3600)  # Convert to days
             
             for i, row in df.iterrows():
+                timestamp_mpl = row['timestamp_mpl']
                 timestamp = row['timestamp']
                 open_price = row['open']
                 high_price = row['high']
                 low_price = row['low']
                 close_price = row['close']
+                
+                # Skip invalid data
+                if open_price <= 0 or high_price <= 0 or low_price <= 0 or close_price <= 0:
+                    continue
                 
                 # Determine candle color (green for up, red for down)
                 candle_color = 'green' if close_price >= open_price else 'red'
@@ -508,33 +658,40 @@ class LiveChartVisualizer:
                 
                 # Upper wick (if high > body top)
                 if high_price > body_top:
-                    self.price_ax.plot([timestamp, timestamp], [body_top, high_price], 
-                                     color='black', linewidth=1.5)
+                    self.price_ax.plot([timestamp_mpl, timestamp_mpl], [body_top, high_price], 
+                                     color='black', linewidth=1.5, alpha=0.8)
                 
                 # Lower wick (if low < body bottom)
                 if low_price < body_bottom:
-                    self.price_ax.plot([timestamp, timestamp], [low_price, body_bottom], 
-                                     color='black', linewidth=1.5)
+                    self.price_ax.plot([timestamp_mpl, timestamp_mpl], [low_price, body_bottom], 
+                                     color='black', linewidth=1.5, alpha=0.8)
                 
                 # Draw the open-close rectangle (body)
                 if close_price >= open_price:
                     # Bullish candle (close >= open)
-                    self.price_ax.bar(timestamp, close_price - open_price, 
+                    self.price_ax.bar(timestamp_mpl, close_price - open_price, 
                                     bottom=open_price, width=candle_width,
-                                    color=candle_color, edgecolor=edge_color, linewidth=1.5)
+                                    color=candle_color, edgecolor=edge_color, linewidth=1.5, alpha=0.8)
                 else:
                     # Bearish candle (close < open)
-                    self.price_ax.bar(timestamp, open_price - close_price, 
+                    self.price_ax.bar(timestamp_mpl, open_price - close_price, 
                                     bottom=close_price, width=candle_width,
-                                    color=candle_color, edgecolor=edge_color, linewidth=1.5)
+                                    color=candle_color, edgecolor=edge_color, linewidth=1.5, alpha=0.8)
             
             # No line chart overlay - pure candlestick chart
             
         except Exception as e:
             self.logger.error(f"Error plotting candlesticks: {e}")
             # Fallback to simple line chart
-            self.price_ax.plot(df['timestamp'], df['close'], 
-                             color='blue', linewidth=2, label=instrument_key)
+            try:
+                df_sorted = df.sort_values('timestamp')
+                # Convert timestamps for matplotlib
+                import matplotlib.dates as mdates
+                timestamps_mpl = df_sorted['timestamp'].apply(lambda x: mdates.date2num(x) if isinstance(x, datetime) else mdates.date2num(datetime.fromtimestamp(x)))
+                self.price_ax.plot(timestamps_mpl, df_sorted['close'], 
+                                 color='blue', linewidth=2, label=instrument_key, alpha=0.7)
+            except Exception as fallback_error:
+                self.logger.error(f"Error in fallback line chart: {fallback_error}")
     
     def start_chart(self):
         """Start the live chart"""
@@ -544,9 +701,9 @@ class LiveChartVisualizer:
         self.is_running = True
         self.stop_event.clear()
         
-        # Start animation
+        # Start animation with reduced frequency to prevent flickering
         self.ani = animation.FuncAnimation(
-            self.fig, self._animate, interval=1000, blit=False
+            self.fig, self._animate, interval=2000, blit=False
         )
         
         self.logger.info("Live chart started")
@@ -608,6 +765,18 @@ class LiveChartVisualizer:
                         self._setup_tooltips()
             except Exception as e:
                 self.logger.error(f"Error forcing chart update: {e}")
+    
+    def refresh_chart_data(self):
+        """Refresh the chart with latest data - useful for periodic updates"""
+        try:
+            if self.is_running:
+                self._draw_charts()
+                # Force matplotlib to redraw
+                if hasattr(self, 'fig') and self.fig:
+                    self.fig.canvas.draw_idle()
+                self.logger.debug("Chart data refreshed")
+        except Exception as e:
+            self.logger.error(f"Error refreshing chart data: {e}")
     
     def _setup_tooltips(self):
         """Setup tooltip functionality for candlesticks"""
@@ -818,6 +987,9 @@ class TkinterChartApp:
         self.root.title("Live Market Data Chart - 2x2 Grid Layout")
         self.root.geometry("1400x900")
         
+        # Set up proper window close handling
+        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        
         self.setup_ui()
         
     def setup_ui(self):
@@ -857,6 +1029,11 @@ class TkinterChartApp:
                                         command=self.stop_timer)
         self.stop_timer_btn.pack(side=tk.LEFT, padx=(0, 5))
         
+        # Strike price update button
+        self.update_strike_btn = ttk.Button(control_frame, text="Update Strike", 
+                                           command=self.update_strike_price)
+        self.update_strike_btn.pack(side=tk.LEFT, padx=(0, 5))
+        
         # Status label
         self.status_label = ttk.Label(control_frame, text="Status: Stopped")
         self.status_label.pack(side=tk.LEFT, padx=(20, 0))
@@ -866,46 +1043,54 @@ class TkinterChartApp:
         grid_frame.pack(fill=tk.BOTH, expand=True)
         
         # Configure grid weights for equal distribution
-        grid_frame.grid_rowconfigure(0, weight=1)
-        grid_frame.grid_rowconfigure(1, weight=1)
-        grid_frame.grid_columnconfigure(0, weight=1)
-        grid_frame.grid_columnconfigure(1, weight=1)
+        grid_frame.grid_rowconfigure(0, weight=1, uniform="row")
+        grid_frame.grid_rowconfigure(1, weight=1, uniform="row")
+        grid_frame.grid_columnconfigure(0, weight=1, uniform="col")
+        grid_frame.grid_columnconfigure(1, weight=1, uniform="col")
         
         # Grid 1 (Top-Left): Intraday Price Chart
         self.grid1_frame = ttk.LabelFrame(grid_frame, text="Intraday Price Chart", padding=5)
         self.grid1_frame.grid(row=0, column=0, sticky="nsew", padx=2, pady=2)
+        self.grid1_frame.grid_rowconfigure(0, weight=1)
+        self.grid1_frame.grid_columnconfigure(0, weight=1)
         
         # Embed matplotlib figure in grid 1
         self.canvas = FigureCanvasTkAgg(self.chart.fig, self.grid1_frame)
         self.canvas.draw()
-        self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+        self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
         
         # Grid 2 (Top-Right): Placeholder for future use
         self.grid2_frame = ttk.LabelFrame(grid_frame, text="Grid 2 - Available", padding=5)
         self.grid2_frame.grid(row=0, column=1, sticky="nsew", padx=2, pady=2)
+        self.grid2_frame.grid_rowconfigure(0, weight=1)
+        self.grid2_frame.grid_columnconfigure(0, weight=1)
         
         # Add placeholder content to grid 2
         placeholder2 = ttk.Label(self.grid2_frame, text="Available for future charts\nor data displays", 
                                justify="center", font=("Arial", 12))
-        placeholder2.pack(expand=True)
+        placeholder2.grid(row=0, column=0, sticky="nsew")
         
         # Grid 3 (Bottom-Left): Placeholder for future use
         self.grid3_frame = ttk.LabelFrame(grid_frame, text="Grid 3 - Available", padding=5)
         self.grid3_frame.grid(row=1, column=0, sticky="nsew", padx=2, pady=2)
+        self.grid3_frame.grid_rowconfigure(0, weight=1)
+        self.grid3_frame.grid_columnconfigure(0, weight=1)
         
         # Add placeholder content to grid 3
         placeholder3 = ttk.Label(self.grid3_frame, text="Available for future charts\nor data displays", 
                                justify="center", font=("Arial", 12))
-        placeholder3.pack(expand=True)
+        placeholder3.grid(row=0, column=0, sticky="nsew")
         
         # Grid 4 (Bottom-Right): Placeholder for future use
         self.grid4_frame = ttk.LabelFrame(grid_frame, text="Grid 4 - Available", padding=5)
         self.grid4_frame.grid(row=1, column=1, sticky="nsew", padx=2, pady=2)
+        self.grid4_frame.grid_rowconfigure(0, weight=1)
+        self.grid4_frame.grid_columnconfigure(0, weight=1)
         
         # Add placeholder content to grid 4
         placeholder4 = ttk.Label(self.grid4_frame, text="Available for future charts\nor data displays", 
                                justify="center", font=("Arial", 12))
-        placeholder4.pack(expand=True)
+        placeholder4.grid(row=0, column=0, sticky="nsew")
         
     def start_chart(self):
         """Start the chart"""
@@ -936,8 +1121,37 @@ class TkinterChartApp:
     def stop_timer(self):
         """Placeholder for stop timer - will be overridden by main app"""
         self.status_label.config(text="Status: Stop Timer button clicked")
-
+    
+    def update_strike_price(self):
+        """Placeholder for update strike price - will be overridden by main app"""
+        self.status_label.config(text="Status: Update Strike button clicked")
+    
+    def on_closing(self):
+        """Handle window close event"""
+        try:
+            # Stop the chart
+            if hasattr(self, 'chart') and self.chart:
+                self.chart.stop_chart()
+            
+            # Destroy the window
+            self.root.destroy()
+            
+            # Force exit the application
+            import os
+            os._exit(0)
+            
+        except Exception as e:
+            print(f"Error during window close: {e}")
+            # Force exit even if there's an error
+            import os
+            os._exit(0)
         
     def run(self):
         """Run the application"""
-        self.root.mainloop()
+        try:
+            self.root.mainloop()
+        except KeyboardInterrupt:
+            self.on_closing()
+        except Exception as e:
+            print(f"Error in main loop: {e}")
+            self.on_closing()

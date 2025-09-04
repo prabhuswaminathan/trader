@@ -198,7 +198,7 @@ class MarketDataApp:
                 # If no stored data, try to fetch from broker
                 logger.info(f"No stored historical data found for {primary_instrument}, fetching from broker...")
                 historical_data = self.agent.get_ohlc_historical_data(
-                    primary_instrument, 
+                    primary_instrument,     
                     interval="day",
                     start_time=None,  # Will use default (last year)
                     end_time=None
@@ -257,8 +257,7 @@ class MarketDataApp:
                 
                 logger.info(f"Displayed {len(display_data)} historical candles in chart")
                 
-                # Force chart update
-                self.chart_visualizer.force_chart_update()
+                # Chart will be updated by animation loop, no need for force update
                 
                 return True
             else:
@@ -288,23 +287,30 @@ class MarketDataApp:
             if intraday_data:
                 logger.info(f"Fetched {len(intraday_data)} 1-minute candles from broker")
                 
-                # Consolidate 1-minute data to 5-minute data
-                consolidated_data = self.agent.consolidate_1min_to_5min(primary_instrument, intraday_data)
-                logger.info(f"Consolidated to {len(consolidated_data)} 5-minute candles")
+                # Store the latest price from the most recent candle for P&L calculations
+                if intraday_data:
+                    latest_candle = intraday_data[-1]  # Get the most recent candle
+                    latest_price = latest_candle.get('close', latest_candle.get('price', 0))
+                    latest_volume = latest_candle.get('volume', 0)
+                    
+                    # Store latest price in datawarehouse for P&L calculations
+                    datawarehouse.store_latest_price(primary_instrument, latest_price, latest_volume)
+                    logger.info(f"Stored latest price for P&L: {primary_instrument} = {latest_price}")
                 
-                # Store the consolidated data
-                self.agent.store_ohlc_data(primary_instrument, consolidated_data, "intraday", 5)
+                # Store the raw intraday data (without consolidation)
+                self.agent.store_ohlc_data(primary_instrument, intraday_data, "intraday", 1)
+                logger.info(f"Stored {len(intraday_data)} 1-minute candles for P&L calculations")
                 
-                # Display in chart (limit to last 100 candles for performance)
-                display_data = consolidated_data[-100:] if len(consolidated_data) > 100 else consolidated_data
+                # Display the data in the chart (limit to last 100 candles for performance)
+                display_data = intraday_data[-100:] if len(intraday_data) > 100 else intraday_data
                 
-                for candle in display_data:
-                    self.chart_visualizer.update_data(primary_instrument, candle)
+                # Use the new consolidation method to properly display 5-minute candles
+                # Clear existing data and add fresh data
+                self.chart_visualizer.add_multiple_candles(primary_instrument, display_data, clear_existing=True)
                 
-                logger.info(f"Displayed {len(display_data)} intraday candles in chart")
+                logger.info(f"Displayed {len(display_data)} intraday candles in chart (consolidated to 5-minute)")
                 
-                # Force chart update
-                self.chart_visualizer.force_chart_update()
+                # Chart will be updated by animation loop, no need for force update
                 
                 return True
             else:
@@ -316,22 +322,12 @@ class MarketDataApp:
             return False
     
     def _process_upstox_data(self, data):
-        """Process Upstox live data"""
+        """Process Upstox live data - simplified to store only latest price for P&L calculations"""
         try:
             # Log the received data for debugging
-            logger.info(f"Processing Upstox data: {type(data)} - {str(data)[:200]}...")
+            logger.debug(f"Processing Upstox data: {type(data)} - {str(data)[:100]}...")
             
-            # Additional debug logging for data structure
-            if hasattr(data, '__dict__'):
-                logger.info(f"Data attributes: {list(data.__dict__.keys())}")
-            if hasattr(data, 'last_price'):
-                logger.info(f"Direct last_price access: {data.last_price}")
-            if hasattr(data, 'ltp'):
-                logger.info(f"Direct ltp access: {data.ltp}")
-            
-            # Upstox data comes as Protobuf messages, we need to extract the relevant information
-            # The data structure depends on the message type (ltp, ohlc, etc.)
-            
+            # Upstox data comes as Protobuf messages, extract price information
             data_str = str(data)
             
             # Try to extract price information from the data using multiple patterns
@@ -339,15 +335,12 @@ class MarketDataApp:
             price = None
             volume = 0
             
-            # Try different price patterns (improved to handle = sign)
+            # Try different price patterns
             price_patterns = [
                 r'ltp[:\s=]*(\d+\.?\d*)',
                 r'last_price[:\s=]*(\d+\.?\d*)',
                 r'price[:\s=]*(\d+\.?\d*)',
                 r'close[:\s=]*(\d+\.?\d*)',
-                r'open[:\s=]*(\d+\.?\d*)',
-                r'high[:\s=]*(\d+\.?\d*)',
-                r'low[:\s=]*(\d+\.?\d*)',
                 r'"last_price":\s*(\d+\.?\d*)',  # JSON format
                 r'last_price:\s*(\d+\.?\d*)',    # Protobuf format
                 r'ltp:\s*(\d+\.?\d*)',           # LTP format
@@ -359,12 +352,12 @@ class MarketDataApp:
                 if price_match:
                     try:
                         price = float(price_match.group(1))
-                        logger.info(f"Extracted price: {price} using pattern: {pattern}")
+                        logger.debug(f"Extracted price: {price} using pattern: {pattern}")
                         break
                     except ValueError:
                         continue
             
-            # Try to extract volume (improved to handle = sign)
+            # Try to extract volume
             volume_patterns = [
                 r'volume[:\s=]*(\d+)',
                 r'vol[:\s=]*(\d+)',
@@ -388,38 +381,20 @@ class MarketDataApp:
                         instrument_key = key
                         break
                 
-                # If no specific instrument found, use the first one
+                # If no specific instrument found, use the first one (NIFTY)
                 if instrument_key is None:
                     instrument_key = list(self.instruments[self.broker_type].keys())[0]
-                    logger.info(f"No specific instrument found, using default: {instrument_key}")
+                    logger.debug(f"No specific instrument found, using default: {instrument_key}")
                 
-                # Create tick data structure
-                tick_data = {
-                    'instrument_key': instrument_key,
-                    'data': data,
-                    'timestamp': time.time(),
-                    'price': price,
-                    'volume': volume
-                }
+                # Store only the latest price in datawarehouse for P&L calculations
+                datawarehouse.store_latest_price(instrument_key, price, volume)
+                logger.info(f"✓ Updated latest price for {instrument_key}: {price} (Volume: {volume})")
                 
-                # Update the chart with this data
-                self.chart_visualizer.update_data(instrument_key, tick_data)
-                logger.info(f"✓ Updated chart for {instrument_key} with price {price}, volume {volume}")
+                # Update strike price display in Grid 2 (throttled to prevent flickering)
+                if not hasattr(self, '_last_strike_update') or (datetime.now() - self._last_strike_update).total_seconds() > 5:
+                    self.update_strike_price_display()
+                    self._last_strike_update = datetime.now()
                 
-                # Store the processed data in the warehouse
-                tick_data = {
-                    'timestamp': datetime.now(),
-                    'open': price,
-                    'high': price,
-                    'low': price,
-                    'close': price,
-                    'volume': volume
-                }
-                # Store as intraday data (will be consolidated to 5-minute buckets)
-                self.agent.store_ohlc_data(instrument_key, [tick_data], "intraday", 1)
-                
-                # Force immediate chart update
-                self.chart_visualizer.force_chart_update()
             else:
                 logger.warning(f"Could not extract price from data: {data_str[:100]}...")
                     
@@ -428,13 +403,25 @@ class MarketDataApp:
             logger.error(f"Data type: {type(data)}, Data: {str(data)[:200]}...")
     
     def _process_kite_data(self, data):
-        """Process Kite live data"""
+        """Process Kite live data - simplified to store only latest price for P&L calculations"""
         try:
             if isinstance(data, list):
                 for tick in data:
                     instrument_token = tick.get('instrument_token')
                     if instrument_token in self.instruments[self.broker_type]:
-                        self.chart_visualizer.update_data(instrument_token, data)
+                        # Extract price and volume from Kite tick data
+                        price = tick.get('last_price')
+                        volume = tick.get('volume', 0)
+                        
+                        if price is not None:
+                            # Store only the latest price in datawarehouse for P&L calculations
+                            datawarehouse.store_latest_price(str(instrument_token), price, volume)
+                            logger.info(f"✓ Updated latest price for {instrument_token}: {price} (Volume: {volume})")
+                            
+                            # Update strike price display in Grid 2 (throttled to prevent flickering)
+                            if not hasattr(self, '_last_strike_update') or (datetime.now() - self._last_strike_update).total_seconds() > 5:
+                                self.update_strike_price_display()
+                                self._last_strike_update = datetime.now()
         except Exception as e:
             logger.error(f"Error processing Kite data: {e}")
     
@@ -525,20 +512,130 @@ class MarketDataApp:
             time.sleep(self.timer_interval)
     
     def _fetch_intraday_data_timer(self):
-        """Fetch intraday data as part of the timer"""
+        """Fetch intraday data as part of the timer and display in chart"""
         try:
             logger.info("Timer: Fetching intraday data...")
             
-            # Fetch intraday data
-            self.fetch_and_display_intraday_data()
+            # Fetch intraday data (this will update the datawarehouse and display in chart)
+            success = self.fetch_and_display_intraday_data()
             
-            # Force chart update
-            if self.chart_visualizer:
-                self.chart_visualizer.force_chart_update()
-                logger.info("Timer: Chart updated with new intraday data")
+            if success:
+                # Update strike price display in Grid 2
+                self.update_strike_price_display()
+                
+                # Chart will be updated by animation loop, no need for manual refresh
+                
+                logger.info("Timer: Intraday data fetched and displayed in chart")
+            else:
+                logger.warning("Timer: Failed to fetch intraday data")
             
         except Exception as e:
             logger.error(f"Error fetching intraday data in timer: {e}")
+    
+    def calculate_nearest_strike_price(self, current_price: float) -> int:
+        """
+        Calculate the nearest strike price (multiples of 50) based on current NIFTY price
+        
+        Args:
+            current_price (float): Current NIFTY price
+            
+        Returns:
+            int: Nearest strike price (multiple of 50)
+        """
+        try:
+            # Handle edge cases
+            if current_price <= 0:
+                return 0
+            
+            # Round to nearest multiple of 50
+            # Use floor division and then multiply by 50, then add 50 if remainder >= 25
+            base_strike = int(current_price // 50) * 50
+            remainder = current_price % 50
+            
+            if remainder >= 25:
+                strike_price = base_strike + 50
+            else:
+                strike_price = base_strike
+            
+            logger.debug(f"Calculated nearest strike price: {current_price} -> {strike_price}")
+            return int(strike_price)
+            
+        except Exception as e:
+            logger.error(f"Error calculating nearest strike price: {e}")
+            return 0
+    
+    def update_strike_price_display(self):
+        """Update the strike price display in Grid 2"""
+        try:
+            # Get latest NIFTY price
+            nifty_instrument = list(self.instruments[self.broker_type].keys())[0]
+            latest_data = datawarehouse.get_latest_price_data(nifty_instrument)
+            
+            if latest_data and latest_data.get('price'):
+                current_price = latest_data['price']
+                nearest_strike = self.calculate_nearest_strike_price(current_price)
+                
+                # Update Grid 2 display
+                if hasattr(self, 'chart_app') and self.chart_app:
+                    self._update_grid2_strike_price(current_price, nearest_strike)
+                
+                logger.info(f"Updated strike price display: NIFTY {current_price} -> Strike {nearest_strike}")
+            else:
+                logger.warning("No current NIFTY price available for strike calculation")
+                
+        except Exception as e:
+            logger.error(f"Error updating strike price display: {e}")
+    
+    def _update_grid2_strike_price(self, current_price: float, strike_price: int):
+        """Update Grid 2 with strike price information"""
+        try:
+            if hasattr(self.chart_app, 'grid2_frame'):
+                # Clear existing content
+                for widget in self.chart_app.grid2_frame.winfo_children():
+                    widget.destroy()
+                
+                # Create new content
+                import tkinter as tk
+                from tkinter import ttk
+                
+                # Title
+                title_label = ttk.Label(self.chart_app.grid2_frame, text="Nearest Strike Price", 
+                                      font=("Arial", 14, "bold"))
+                title_label.pack(pady=(10, 5))
+                
+                # Current NIFTY price
+                current_label = ttk.Label(self.chart_app.grid2_frame, 
+                                        text=f"Current NIFTY: {current_price:.2f}", 
+                                        font=("Arial", 12))
+                current_label.pack(pady=2)
+                
+                # Strike price
+                strike_label = ttk.Label(self.chart_app.grid2_frame, 
+                                       text=f"Nearest Strike: {strike_price}", 
+                                       font=("Arial", 16, "bold"), 
+                                       foreground="blue")
+                strike_label.pack(pady=5)
+                
+                # Difference
+                difference = abs(current_price - strike_price)
+                diff_label = ttk.Label(self.chart_app.grid2_frame, 
+                                     text=f"Difference: {difference:.2f}", 
+                                     font=("Arial", 10))
+                diff_label.pack(pady=2)
+                
+                # Last updated
+                from datetime import datetime
+                last_updated = datetime.now().strftime("%H:%M:%S")
+                update_label = ttk.Label(self.chart_app.grid2_frame, 
+                                       text=f"Updated: {last_updated}", 
+                                       font=("Arial", 8), 
+                                       foreground="gray")
+                update_label.pack(pady=(10, 5))
+                
+                logger.debug(f"Updated Grid 2 with strike price: {strike_price}")
+                
+        except Exception as e:
+            logger.error(f"Error updating Grid 2 strike price display: {e}")
     
     def run_chart_app(self):
         """Run the chart application with GUI"""
@@ -599,6 +696,11 @@ class MarketDataApp:
                 self.stop_timer()
                 self.chart_app.status_label.config(text="Status: Timer Stopped")
             
+            def update_strike_price():
+                logger.info("Manually updating strike price display...")
+                self.update_strike_price_display()
+                self.chart_app.status_label.config(text="Status: Strike Price Updated")
+            
             # Update button commands to use integrated functions
             self.chart_app.start_btn.config(command=integrated_start)
             self.chart_app.stop_btn.config(command=integrated_stop)
@@ -606,13 +708,75 @@ class MarketDataApp:
             self.chart_app.fetch_intraday_btn.config(command=fetch_intraday)
             self.chart_app.start_timer_btn.config(command=start_timer)
             self.chart_app.stop_timer_btn.config(command=stop_timer)
+            self.chart_app.update_strike_btn.config(command=update_strike_price)
             
             logger.info("Starting chart application...")
+            
+            # Auto-start the chart and timer
+            logger.info("Auto-starting chart and timer...")
+            self.chart_app.chart.start_chart()
+            self.chart_app.status_label.config(text="Status: Running")
+            self.chart_app.start_btn.config(state=tk.DISABLED)
+            self.chart_app.stop_btn.config(state=tk.NORMAL)
+            
+            # Start live data streaming
+            self.start_live_data()
+            
+            # Start the timer for automatic data fetching
+            self.start_timer()
+            
+            # Override the window close handler to include cleanup
+            def cleanup_and_close():
+                logger.info("Application closing - cleaning up...")
+                try:
+                    # Stop timer
+                    self.stop_timer()
+                    # Stop live data
+                    self.stop_live_data()
+                    # Stop chart
+                    if self.chart_visualizer:
+                        self.chart_visualizer.stop_chart()
+                    logger.info("Cleanup completed")
+                except Exception as e:
+                    logger.error(f"Error during cleanup: {e}")
+                finally:
+                    # Force exit
+                    import os
+                    os._exit(0)
+            
+            # Set the cleanup function as the window close handler
+            self.chart_app.root.protocol("WM_DELETE_WINDOW", cleanup_and_close)
+            
             self.chart_app.run()
             
         except Exception as e:
             logger.error(f"Error running chart app: {e}")
             raise
+    
+    def cleanup(self):
+        """Clean up all resources and stop all processes"""
+        try:
+            logger.info("Starting application cleanup...")
+            
+            # Stop timer
+            if hasattr(self, 'timer_running') and self.timer_running:
+                self.stop_timer()
+                logger.info("Timer stopped")
+            
+            # Stop live data
+            if hasattr(self, 'agent') and self.agent:
+                self.stop_live_data()
+                logger.info("Live data stopped")
+            
+            # Stop chart
+            if hasattr(self, 'chart_visualizer') and self.chart_visualizer:
+                self.chart_visualizer.stop_chart()
+                logger.info("Chart stopped")
+            
+            logger.info("Application cleanup completed")
+            
+        except Exception as e:
+            logger.error(f"Error during cleanup: {e}")
     
     def get_status(self) -> Dict[str, Any]:
         """Get current application status"""
@@ -666,10 +830,12 @@ def main():
         # Cleanup
         try:
             if 'app' in locals():
-                app.stop_live_data()
-                app.stop_timer()
-        except:
-            pass
+                app.cleanup()
+        except Exception as e:
+            logger.error(f"Error during final cleanup: {e}")
+            # Force exit
+            import os
+            os._exit(0)
 
 
 if __name__ == "__main__":
