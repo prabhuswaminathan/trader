@@ -14,10 +14,11 @@ from kite_agent import KiteAgent
 from chart_visualizer import LiveChartVisualizer, TkinterChartApp
 from broker_agent import BrokerAgent
 from datawarehouse import datawarehouse
+from strategy_manager import StrategyManager
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.ERROR,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("MainApp")
@@ -43,6 +44,9 @@ class MarketDataApp:
         self.timer_interval = 300  # 5 minutes in seconds
         self.market_start_time = dt_time(9, 15)  # 9:15 AM
         self.market_end_time = dt_time(15, 30)   # 3:30 PM
+        
+        # Strategy management
+        self.strategy_manager = StrategyManager()
         
         # Configuration - Only Nifty 50
         self.instruments = {
@@ -437,10 +441,6 @@ class MarketDataApp:
                 datawarehouse.store_latest_price(instrument_key, price, volume)
                 self._log_live_feed(f"✓ Updated latest price for {instrument_key}: {price} (Volume: {volume})")
                 
-                # Update strike price display in Grid 2 (throttled to prevent flickering)
-                if not hasattr(self, '_last_strike_update') or self._last_strike_update is None or self._safe_datetime_diff(datetime.now(), self._last_strike_update) > 5:
-                    self.update_strike_price_display()
-                    self._last_strike_update = datetime.now()
                 
             else:
                 logger.warning(f"Could not extract price from data: {data_str[:100]}...")
@@ -470,10 +470,6 @@ class MarketDataApp:
                             datawarehouse.store_latest_price(str(instrument_token), price, volume)
                             self._log_live_feed(f"✓ Updated latest price for {instrument_token}: {price} (Volume: {volume})")
                             
-                            # Update strike price display in Grid 2 (throttled to prevent flickering)
-                            if not hasattr(self, '_last_strike_update') or self._last_strike_update is None or self._safe_datetime_diff(datetime.now(), self._last_strike_update) > 5:
-                                self.update_strike_price_display()
-                                self._last_strike_update = datetime.now()
         except Exception as e:
             logger.error(f"Error processing Kite data: {e}")
     
@@ -577,8 +573,6 @@ class MarketDataApp:
             success = self.fetch_and_display_intraday_data()
             
             if success:
-                # Update strike price display in Grid 2
-                self.update_strike_price_display()
                 
                 # Ensure chart is running and force refresh to display new data
                 if self.chart_visualizer:
@@ -592,152 +586,9 @@ class MarketDataApp:
         except Exception as e:
             logger.error(f"Error fetching intraday data in timer: {e}")
     
-    def calculate_nearest_strike_price(self, current_price: float) -> int:
-        """
-        Calculate the nearest strike price (multiples of 50) based on current NIFTY price
-        
-        Args:
-            current_price (float): Current NIFTY price
-            
-        Returns:
-            int: Nearest strike price (multiple of 50)
-        """
-        try:
-            # Handle edge cases
-            if current_price <= 0:
-                return 0
-            
-            # Round to nearest multiple of 50
-            # Use floor division and then multiply by 50, then add 50 if remainder >= 25
-            base_strike = int(current_price // 50) * 50
-            remainder = current_price % 50
-            
-            if remainder >= 25:
-                strike_price = base_strike + 50
-            else:
-                strike_price = base_strike
-            
-            self._log_live_feed(f"Calculated nearest strike price: {current_price} -> {strike_price}")
-            return int(strike_price)
-            
-        except Exception as e:
-            logger.error(f"Error calculating nearest strike price: {e}")
-            return 0
     
-    def update_strike_price_display(self):
-        """Update the strike price display in Grid 2"""
-        try:
-            # Get latest NIFTY price
-            nifty_instrument = list(self.instruments[self.broker_type].keys())[0]
-            latest_data = datawarehouse.get_latest_price_data(nifty_instrument)
-            
-            if latest_data and latest_data.get('price'):
-                current_price = latest_data['price']
-                nearest_strike = self.calculate_nearest_strike_price(current_price)
-                
-                # Update Grid 2 display
-                if hasattr(self, 'chart_app') and self.chart_app:
-                    self._update_grid2_strike_price(current_price, nearest_strike)
-                
-                self._log_live_feed(f"Updated strike price display: NIFTY {current_price} -> Strike {nearest_strike}")
-            else:
-                # Update Grid 2 with no data state
-                if hasattr(self, 'chart_app') and self.chart_app:
-                    self._update_grid2_no_data()
-                logger.warning("No current NIFTY price available for strike calculation")
-                
-        except Exception as e:
-            logger.error(f"Error updating strike price display: {e}")
     
-    def _update_grid2_strike_price(self, current_price: float, strike_price: int):
-        """Update Grid 2 with strike price information"""
-        try:
-            if hasattr(self.chart_app, 'grid2_frame'):
-                # Clear existing content
-                for widget in self.chart_app.grid2_frame.winfo_children():
-                    widget.destroy()
-                
-                # Create new content
-                import tkinter as tk
-                from tkinter import ttk
-                
-                # Title
-                title_label = ttk.Label(self.chart_app.grid2_frame, text="Nearest Strike Price", 
-                                      font=("Arial", 14, "bold"))
-                title_label.pack(pady=(10, 5))
-                
-                # Current NIFTY price
-                current_label = ttk.Label(self.chart_app.grid2_frame, 
-                                        text=f"Current NIFTY: {current_price:.2f}", 
-                                        font=("Arial", 12))
-                current_label.pack(pady=2)
-                
-                # Strike price
-                strike_label = ttk.Label(self.chart_app.grid2_frame, 
-                                       text=f"Nearest Strike: {strike_price}", 
-                                       font=("Arial", 16, "bold"), 
-                                       foreground="blue")
-                strike_label.pack(pady=5)
-                
-                # Difference
-                difference = abs(current_price - strike_price)
-                diff_label = ttk.Label(self.chart_app.grid2_frame, 
-                                     text=f"Difference: {difference:.2f}", 
-                                     font=("Arial", 10))
-                diff_label.pack(pady=2)
-                
-                # Last updated
-                from datetime import datetime
-                last_updated = datetime.now().strftime("%H:%M:%S")
-                update_label = ttk.Label(self.chart_app.grid2_frame, 
-                                       text=f"Updated: {last_updated}", 
-                                       font=("Arial", 8), 
-                                       foreground="gray")
-                update_label.pack(pady=(10, 5))
-                
-                self._log_live_feed(f"Updated Grid 2 with strike price: {strike_price}")
-                
-        except Exception as e:
-            logger.error(f"Error updating Grid 2 strike price display: {e}")
     
-    def _update_grid2_no_data(self):
-        """Update Grid 2 with no data available state"""
-        try:
-            if hasattr(self.chart_app, 'grid2_frame'):
-                # Clear existing content
-                for widget in self.chart_app.grid2_frame.winfo_children():
-                    widget.destroy()
-                
-                # Create new content for no data state
-                import tkinter as tk
-                from tkinter import ttk
-                
-                # Title
-                title_label = ttk.Label(self.chart_app.grid2_frame, text="Nearest Strike Price", 
-                                      font=("Arial", 14, "bold"))
-                title_label.pack(pady=(10, 5))
-                
-                # No data message
-                no_data_label = ttk.Label(self.chart_app.grid2_frame, 
-                                        text="No live data available\nWaiting for market data...", 
-                                        font=("Arial", 12),
-                                        foreground="orange",
-                                        justify="center")
-                no_data_label.pack(pady=20)
-                
-                # Last updated
-                from datetime import datetime
-                last_updated = datetime.now().strftime("%H:%M:%S")
-                update_label = ttk.Label(self.chart_app.grid2_frame, 
-                                       text=f"Last check: {last_updated}", 
-                                       font=("Arial", 8), 
-                                       foreground="gray")
-                update_label.pack(pady=(10, 5))
-                
-                logger.debug("Updated Grid 2 with no data state")
-                
-        except Exception as e:
-            logger.error(f"Error updating Grid 2 no data display: {e}")
     
     def _initialize_chart_with_data(self):
         """Initialize the chart with fetched data to ensure it's properly displayed"""
@@ -747,8 +598,6 @@ class MarketDataApp:
                 self.chart_visualizer.ensure_chart_running()
                 self.chart_visualizer.force_chart_update()
                 
-                # Initialize Grid 2 with strike price data if available
-                self.update_strike_price_display()
                 
                 logger.info("Chart initialized with fetched data")
             else:
@@ -815,10 +664,6 @@ class MarketDataApp:
                 self.stop_timer()
                 self.chart_app.status_label.config(text="Status: Timer Stopped")
             
-            def update_strike_price():
-                logger.info("Manually updating strike price display...")
-                self.update_strike_price_display()
-                self.chart_app.status_label.config(text="Status: Strike Price Updated")
             
             # Update button commands to use integrated functions
             self.chart_app.start_btn.config(command=integrated_start)
@@ -827,7 +672,7 @@ class MarketDataApp:
             self.chart_app.fetch_intraday_btn.config(command=fetch_intraday)
             self.chart_app.start_timer_btn.config(command=start_timer)
             self.chart_app.stop_timer_btn.config(command=stop_timer)
-            self.chart_app.update_strike_btn.config(command=update_strike_price)
+            self.chart_app.manage_strategies_btn.config(command=self.manage_strategies)
             
             logger.info("Starting chart application...")
             
@@ -844,6 +689,13 @@ class MarketDataApp:
             # Start the timer for automatic data fetching
             self.start_timer()
             self.chart_app.status_label.config(text="Status: Running - Timer active (5min + 10s intervals)")
+            
+            # Auto-display strategy in Grid 2 on startup
+            try:
+                logger.info("Auto-displaying strategy in Grid 2...")
+                self.manage_strategies()
+            except Exception as e:
+                logger.error(f"Error in auto strategy display: {e}")
             
             # Override the window close handler to include cleanup
             def cleanup_and_close():
@@ -872,6 +724,73 @@ class MarketDataApp:
         except Exception as e:
             logger.error(f"Error running chart app: {e}")
             raise
+    
+    def manage_strategies(self, access_token: str = None) -> Dict[str, Any]:
+        """
+        Manage trading strategies - check for open positions and create Iron Condor if needed
+        
+        Args:
+            access_token: Upstox access token
+            
+        Returns:
+            Dict containing strategy management results
+        """
+        try:
+            logger.info("Starting strategy management...")
+            
+            # Get access token from agent if not provided
+            if access_token is None and self.agent and hasattr(self.agent, 'ACCESS_TOKEN'):
+                access_token = self.agent.ACCESS_TOKEN
+                logger.info("Using access token from agent")
+            elif access_token is None:
+                logger.error("No access token available for strategy management")
+                return {
+                    "error": "No access token available",
+                    "action_taken": "error"
+                }
+            
+            result = self.strategy_manager.manage_positions(access_token)
+            
+            # Log results
+            logger.info(f"Strategy management result: {result}")
+            
+            if result.get("action_taken") == "iron_condor_created":
+                logger.info(f"Created Iron Condor strategy: {result.get('trade_created')}")
+                
+                # Display Iron Condor strategy in Grid 2
+                if self.chart_app and hasattr(self.chart_app, 'display_iron_condor_strategy'):
+                    try:
+                        # Get the created trade from the strategy manager (not database)
+                        trade_id = result.get('trade_created')
+                        if trade_id:
+                            # Get the trade object directly from strategy manager
+                            # Since we're not storing in DB, we need to recreate it
+                            spot_price = result.get('spot_price', 25000)
+                            trade = self.strategy_manager.create_iron_condor_strategy_fallback(spot_price)
+                            
+                            # Calculate payoff data
+                            payoff_data = self.strategy_manager.calculate_iron_condor_payoff(trade, spot_price)
+                            
+                            # Display in Grid 2
+                            self.chart_app.display_iron_condor_strategy(trade, spot_price, payoff_data)
+                            logger.info(f"Displayed Iron Condor strategy in Grid 2")
+                    except Exception as e:
+                        logger.error(f"Error displaying Iron Condor strategy: {e}")
+                        
+            elif result.get("action_taken") == "error":
+                logger.error(f"Strategy management error: {result.get('error')}")
+                
+            else:
+                logger.warning(f"Unknown action taken: {result.get('action_taken')}")
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Error in strategy management: {e}")
+            return {
+                "error": str(e),
+                "action_taken": "error"
+            }
     
     def cleanup(self):
         """Clean up all resources and stop all processes"""

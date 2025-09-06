@@ -1065,6 +1065,7 @@ class TkinterChartApp:
     
     def __init__(self, chart_visualizer):
         self.chart = chart_visualizer
+        self.logger = logging.getLogger("TkinterChartApp")
         self.root = tk.Tk()
         self.root.title("Live Market Data Chart - 2x2 Grid Layout")
         self.root.geometry("1400x900")
@@ -1073,6 +1074,42 @@ class TkinterChartApp:
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.setup_ui()
+        
+        # Maximize window after UI is set up
+        self.root.after(100, self._maximize_window)
+    
+    def _maximize_window(self):
+        """Maximize the window using multiple methods"""
+        try:
+            # Method 1: Linux/Unix attributes
+            self.root.attributes('-zoomed', True)
+        except:
+            pass
+        
+        try:
+            # Method 2: Windows state
+            self.root.state('zoomed')
+        except:
+            pass
+        
+        try:
+            # Method 3: Use geometry to fill screen
+            screen_width = self.root.winfo_screenwidth()
+            screen_height = self.root.winfo_screenheight()
+            self.root.geometry(f"{screen_width}x{screen_height}+0+0")
+        except:
+            pass
+        
+        try:
+            # Method 4: Use wm_attributes
+            self.root.wm_attributes('-zoomed', True)
+        except:
+            pass
+        
+        # Force update and raise window
+        self.root.update_idletasks()
+        self.root.lift()
+        self.root.focus_force()
         
     def setup_ui(self):
         """Set up the user interface"""
@@ -1111,10 +1148,11 @@ class TkinterChartApp:
                                         command=self.stop_timer)
         self.stop_timer_btn.pack(side=tk.LEFT, padx=(0, 5))
         
-        # Strike price update button
-        self.update_strike_btn = ttk.Button(control_frame, text="Update Strike", 
-                                           command=self.update_strike_price)
-        self.update_strike_btn.pack(side=tk.LEFT, padx=(0, 5))
+        
+        # Strategy management button
+        self.manage_strategies_btn = ttk.Button(control_frame, text="Manage Strategies", 
+                                               command=self.manage_strategies)
+        self.manage_strategies_btn.pack(side=tk.LEFT, padx=(0, 5))
         
         # Status label
         self.status_label = ttk.Label(control_frame, text="Status: Stopped")
@@ -1141,8 +1179,8 @@ class TkinterChartApp:
         self.canvas.draw()
         self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
         
-        # Grid 2 (Top-Right): Strike Price Display
-        self.grid2_frame = ttk.LabelFrame(grid_frame, text="Nearest Strike Price", padding=5)
+        # Grid 2 (Top-Right): Strategy Display
+        self.grid2_frame = ttk.LabelFrame(grid_frame, text="Strategy Display", padding=5)
         self.grid2_frame.grid(row=0, column=1, sticky="nsew", padx=2, pady=2)
         self.grid2_frame.grid_rowconfigure(0, weight=1)
         self.grid2_frame.grid_columnconfigure(0, weight=1)
@@ -1173,22 +1211,23 @@ class TkinterChartApp:
         placeholder4.grid(row=0, column=0, sticky="nsew")
     
     def _initialize_grid2_content(self):
-        """Initialize Grid 2 with proper strike price display content"""
+        """Initialize Grid 2 with default content"""
         try:
             # Clear any existing content
             for widget in self.grid2_frame.winfo_children():
                 widget.destroy()
             
             # Title
-            title_label = ttk.Label(self.grid2_frame, text="Nearest Strike Price", 
+            title_label = ttk.Label(self.grid2_frame, text="Strategy Display", 
                                   font=("Arial", 14, "bold"))
             title_label.pack(pady=(10, 5))
             
             # Initial state message
             initial_label = ttk.Label(self.grid2_frame, 
-                                    text="Waiting for live data...", 
+                                    text="No active strategies\nUse 'Manage Strategies' to create or view strategies", 
                                     font=("Arial", 12),
-                                    foreground="gray")
+                                    foreground="gray",
+                                    justify="center")
             initial_label.pack(pady=20)
             
             # Last updated
@@ -1202,6 +1241,101 @@ class TkinterChartApp:
             
         except Exception as e:
             print(f"Error initializing Grid 2 content: {e}")
+    
+    def display_iron_condor_strategy(self, trade, spot_price, payoff_data):
+        """Display Iron Condor strategy chart in Grid 2"""
+        try:
+            # Clear any existing content
+            for widget in self.grid2_frame.winfo_children():
+                widget.destroy()
+            
+            # Update title
+            title_label = ttk.Label(self.grid2_frame, text="Iron Condor Strategy", 
+                                  font=("Arial", 14, "bold"))
+            title_label.pack(pady=(10, 5))
+            
+            # Create matplotlib figure for Iron Condor
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            import matplotlib.pyplot as plt
+            
+            fig, ax = plt.subplots(figsize=(6, 4))
+            
+            # Plot payoff curve
+            ax.plot(payoff_data["price_range"], payoff_data["payoffs"], 
+                   'b-', linewidth=2, label='Payoff at Expiry')
+            
+            # Mark current spot price
+            ax.axvline(x=spot_price, color='red', linestyle='--', 
+                      label=f'Current Spot: {spot_price}')
+            
+            # Mark strikes
+            strikes = [leg.strike_price for leg in trade.legs]
+            for strike in strikes:
+                ax.axvline(x=strike, color='gray', linestyle=':', alpha=0.7)
+            
+            # Mark breakeven points
+            for be in payoff_data["breakevens"]:
+                ax.axvline(x=be, color='green', linestyle=':', alpha=0.7)
+                ax.text(be, payoff_data["max_profit"] * 0.1, f'BE: {be}', 
+                       rotation=90, ha='right', va='bottom', fontsize=8)
+            
+            # Formatting
+            ax.set_xlabel('NIFTY Price at Expiry')
+            ax.set_ylabel('Profit/Loss (₹)')
+            ax.set_title(f'Iron Condor - {trade.trade_id}')
+            ax.grid(True, alpha=0.3)
+            ax.legend(fontsize=8)
+            
+            # Add strategy details
+            strategy_text = f"""Strategy Details:
+Strikes: {sorted(strikes)}
+Max Profit: ₹{payoff_data["max_profit"]:.0f}
+Max Loss: ₹{payoff_data["max_loss"]:.0f}
+Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
+            
+            ax.text(0.02, 0.98, strategy_text, transform=ax.transAxes,
+                   verticalalignment='top', fontsize=8,
+                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+            
+            plt.tight_layout()
+            
+            # Embed in grid 2
+            canvas = FigureCanvasTkAgg(fig, self.grid2_frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            
+            # Add trade info below chart
+            info_frame = ttk.Frame(self.grid2_frame)
+            info_frame.pack(fill=tk.X, pady=(5, 0))
+            
+            trade_info = ttk.Label(info_frame, 
+                                 text=f"Trade: {trade.trade_id} | Status: {trade.status.value}",
+                                 font=("Arial", 8))
+            trade_info.pack()
+            
+            self.logger.info(f"Displayed Iron Condor strategy in Grid 2: {trade.trade_id}")
+            
+        except Exception as e:
+            self.logger.error(f"Error displaying Iron Condor strategy: {e}")
+            # Fallback to error message
+            error_label = ttk.Label(self.grid2_frame, 
+                                  text=f"Error displaying strategy: {e}",
+                                  font=("Arial", 10),
+                                  foreground="red")
+            error_label.pack(pady=20)
+    
+    def clear_grid2(self):
+        """Clear Grid 2 and reset to default content"""
+        try:
+            # Clear any existing content
+            for widget in self.grid2_frame.winfo_children():
+                widget.destroy()
+            
+            # Reset to default content
+            self._initialize_grid2_content()
+            
+        except Exception as e:
+            self.logger.error(f"Error clearing Grid 2: {e}")
         
     def start_chart(self):
         """Start the chart"""
@@ -1225,6 +1359,10 @@ class TkinterChartApp:
         """Placeholder for fetch intraday data - will be overridden by main app"""
         self.status_label.config(text="Status: Fetch Intraday button clicked")
     
+    def manage_strategies(self):
+        """Placeholder for manage strategies - will be overridden by main app"""
+        self.status_label.config(text="Status: Manage Strategies button clicked")
+    
     def start_timer(self):
         """Placeholder for start timer - will be overridden by main app"""
         self.status_label.config(text="Status: Start Timer button clicked")
@@ -1233,9 +1371,6 @@ class TkinterChartApp:
         """Placeholder for stop timer - will be overridden by main app"""
         self.status_label.config(text="Status: Stop Timer button clicked")
     
-    def update_strike_price(self):
-        """Placeholder for update strike price - will be overridden by main app"""
-        self.status_label.config(text="Status: Update Strike button clicked")
     
     def on_closing(self):
         """Handle window close event"""
