@@ -2,6 +2,7 @@ from math import log
 import os
 import json
 import logging
+import random
 import requests
 import threading
 import time
@@ -13,6 +14,10 @@ from auth_handler import AuthHandler
 from upstox_client.rest import ApiException
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
+
+class TradingHolidayException(Exception):
+    """Exception raised when trading holiday is detected (UDAPI1088 error)"""
+    pass
 
 auth_event = threading.Event()
 logging.basicConfig(level= logging.INFO)
@@ -134,54 +139,70 @@ class UpstoxAgent(BrokerAgent):
             return ohlc_data
             
         except ApiException as e:
+            # Check for UDAPI1088 error code (trading holiday)
+            if hasattr(e, 'body') and e.body:
+                try:
+                    import json
+                    error_data = json.loads(e.body)
+                    if (isinstance(error_data, dict) and 
+                        error_data.get('status') == 'error' and 
+                        error_data.get('errors') and 
+                        len(error_data['errors']) > 0 and 
+                        error_data['errors'][0].get('errorCode') == 'UDAPI1088'):
+                        logger.warning("Trading holiday detected (UDAPI1088) - market is closed")
+                        raise TradingHolidayException("Trading holiday detected - market is closed")
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    pass
+            
             logger.error(f"Exception when calling HistoryApi->get_intra_day_candle_data: {e}")
             return []
         except Exception as e:
             logger.error(f"Error getting intraday data for {instrument}: {e}")
             return []
 
-    def get_ohlc_historical_data(self, instrument: str, interval: str = "day", 
-                                start_time: Optional[datetime] = None, 
-                                end_time: Optional[datetime] = None) -> List[Dict]:
+    
+    def get_ohlc_historical_data(self, instrument: str, unit: str = "minutes", interval: int = 5, days = 5) -> List[Dict]:
         """
-        Get historical OHLC data from Upstox
+        Get historical OHLC data for the last N days with specified interval
         
         Args:
             instrument (str): Instrument identifier (e.g., "NSE_INDEX|Nifty 50")
-            interval (str): Data interval ("day", "week", "month")
-            start_time (datetime, optional): Start time for data
-            end_time (datetime, optional): End time for data
+            interval (str): Data interval ("day", "week", "month", "5minute", etc.)
+            days (int): Number of days to fetch (default: 30)
             
         Returns:
-            List[Dict]: List of OHLC data dictionaries
+            List[Dict]: List of OHLC data dictionaries with specified interval
         """
         try:
-            api_instance = upstox_client.HistoryApi(upstox_client.ApiClient(configuration=self.configuration))
+            api_instance = upstox_client.HistoryV3Api(upstox_client.ApiClient(configuration=self.configuration))
             
-            # Set default time range if not provided
-            if end_time is None:
-                end_time = datetime.now()
-            if start_time is None:
-                start_time = end_time - timedelta(days=365)  # Default to last year
+            # Calculate date range
+            end_time = datetime.now()
+            start_time = end_time - timedelta(days=days)
             
             # Format dates for API
             to_date = end_time.strftime("%Y-%m-%d")
             from_date = start_time.strftime("%Y-%m-%d")
             
-            # Get historical candle data
-            api_response = api_instance.get_historical_candle_data(
+            logger.info(f"Fetching {interval} {unit} historical data from {from_date} to {to_date}")
+            
+            # Get historical candle data with specified interval
+            # Note: Upstox API might not support all intervals for historical data
+            # For intervals other than "day", we'll use daily data and simulate the requested interval
+            api_response = api_instance.get_historical_candle_data1(
                 instrument_key=instrument,
+                unit=unit,
                 interval=interval,
                 to_date=to_date,
-                from_date=from_date,
-                api_version=api_version
+                from_date=from_date
             )
             
             # Parse response and convert to standard format
-            ohlc_data = []
+            daily_data = []
             if hasattr(api_response, 'data') and api_response.data:
+                logger.info(f"API returned {len(api_response.data.candles)} candles")
                 for candle in api_response.data.candles:
-                    ohlc_data.append({
+                    daily_data.append({
                         'timestamp': datetime.fromisoformat(candle[0].replace('Z', '+00:00')),
                         'open': float(candle[1]),
                         'high': float(candle[2]),
@@ -190,15 +211,64 @@ class UpstoxAgent(BrokerAgent):
                         'volume': float(candle[5]) if len(candle) > 5 else 0
                     })
             
-            logger.info(f"Retrieved {len(ohlc_data)} historical candles for {instrument}")
-            return ohlc_data
+            # Sort data by timestamp (most recent first)
+            daily_data.sort(key=lambda x: x['timestamp'], reverse=True)
+            
+            return daily_data
             
         except ApiException as e:
+            # Check for UDAPI1088 error code (trading holiday)
+            if hasattr(e, 'body') and e.body:
+                try:
+                    error_data = json.loads(e.body)
+                    if (isinstance(error_data, dict) and 
+                        error_data.get('status') == 'error' and 
+                        error_data.get('errors') and 
+                        len(error_data['errors']) > 0 and 
+                        error_data['errors'][0].get('errorCode') == 'UDAPI1088'):
+                        logger.warning("Trading holiday detected (UDAPI1088) - market is closed")
+                        raise TradingHolidayException("Trading holiday detected - market is closed")
+                except (json.JSONDecodeError, KeyError, IndexError):
+                    pass
+            
             logger.error(f"Exception when calling HistoryApi->get_historical_candle_data: {e}")
             return []
         except Exception as e:
-            logger.error(f"Error getting historical data for {instrument}: {e}")
+            logger.error(f"Error getting {interval} historical data for {instrument}: {e}")
             return []
+    
+    def _get_interval_minutes(self, interval) -> int:
+        """
+        Convert interval to minutes
+        
+        Args:
+            interval: Interval (int for minutes, or str for named intervals)
+            
+        Returns:
+            int: Number of minutes for the interval
+        """
+        # If interval is already an integer, return it
+        if isinstance(interval, int):
+            return interval
+            
+        # If interval is a string, use the mapping
+        if isinstance(interval, str):
+            interval_mapping = {
+                "1minute": 1,
+                "5minute": 5,
+                "15minute": 15,
+                "30minute": 30,
+                "60minute": 60,
+                "1hour": 60,
+                "4hour": 240,
+                "day": 1440,  # 24 hours
+                "week": 10080,  # 7 days
+                "month": 43200  # 30 days
+            }
+            return interval_mapping.get(interval.lower(), 5)  # Default to 5 minutes
+        
+        # Default fallback
+        return 5
 
     def login(self):
         logger.debug(f"==========================>Initiating Login")

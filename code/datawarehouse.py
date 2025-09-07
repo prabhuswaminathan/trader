@@ -24,7 +24,6 @@ class DataWarehouse:
         
         # In-memory storage for active data
         self.intraday_data: Dict[str, pd.DataFrame] = {}
-        self.historical_data: Dict[str, pd.DataFrame] = {}
         
         # Latest price storage for P&L calculations
         self.latest_prices: Dict[str, Dict] = {}  # {instrument: {price, timestamp, volume}}
@@ -187,44 +186,6 @@ class DataWarehouse:
             except Exception as e:
                 self.logger.error(f"Error storing intraday data for {instrument}: {e}")
     
-    def store_historical_data(self, instrument: str, ohlc_data: List[Dict]):
-        """
-        Store historical OHLC data
-        
-        Args:
-            instrument (str): Instrument identifier
-            ohlc_data (List[Dict]): List of OHLC data
-        """
-        with self.lock:
-            try:
-                # Convert to DataFrame
-                df = pd.DataFrame(ohlc_data)
-                if df.empty:
-                    return
-                
-                # Set timestamp as index
-                df['timestamp'] = pd.to_datetime(df['timestamp'])
-                df.set_index('timestamp', inplace=True)
-                
-                # Load existing data
-                existing_df = self._load_data_from_file(instrument, 'historical')
-                
-                if not existing_df.empty:
-                    # Combine with existing data
-                    combined_df = pd.concat([existing_df, df])
-                    # Remove duplicates and sort
-                    combined_df = combined_df[~combined_df.index.duplicated(keep='last')].sort_index()
-                else:
-                    combined_df = df
-                
-                # Store in memory and file
-                self.historical_data[instrument] = combined_df
-                self._save_data_to_file(instrument, 'historical', combined_df)
-                
-                self.logger.info(f"Stored {len(df)} historical candles for {instrument}")
-                
-            except Exception as e:
-                self.logger.error(f"Error storing historical data for {instrument}: {e}")
     
     def get_intraday_data(self, instrument: str, start_time: Optional[datetime] = None, 
                          end_time: Optional[datetime] = None, limit: Optional[int] = None) -> pd.DataFrame:
@@ -269,48 +230,6 @@ class DataWarehouse:
                 self.logger.error(f"Error getting intraday data for {instrument}: {e}")
                 return pd.DataFrame()
     
-    def get_historical_data(self, instrument: str, start_time: Optional[datetime] = None, 
-                           end_time: Optional[datetime] = None, limit: Optional[int] = None) -> pd.DataFrame:
-        """
-        Get historical OHLC data
-        
-        Args:
-            instrument (str): Instrument identifier
-            start_time (datetime, optional): Start time filter
-            end_time (datetime, optional): End time filter
-            limit (int, optional): Maximum number of records to return
-            
-        Returns:
-            pd.DataFrame: Historical OHLC data
-        """
-        with self.lock:
-            try:
-                # Load from memory first, then file if needed
-                if instrument in self.historical_data:
-                    df = self.historical_data[instrument].copy()
-                else:
-                    df = self._load_data_from_file(instrument, 'historical')
-                    if not df.empty:
-                        self.historical_data[instrument] = df
-                
-                if df.empty:
-                    return df
-                
-                # Apply filters
-                if start_time:
-                    df = df[df.index >= start_time]
-                if end_time:
-                    df = df[df.index <= end_time]
-                
-                # Apply limit
-                if limit:
-                    df = df.tail(limit)
-                
-                return df
-                
-            except Exception as e:
-                self.logger.error(f"Error getting historical data for {instrument}: {e}")
-                return pd.DataFrame()
     
     def get_latest_price(self, instrument: str) -> Optional[float]:
         """
@@ -323,16 +242,12 @@ class DataWarehouse:
             float: Latest close price, or None if not available
         """
         try:
-            # Try intraday data first
-            intraday_df = self.get_intraday_data(instrument, limit=1)
-            if not intraday_df.empty:
-                return float(intraday_df['close'].iloc[-1])
-            
-            # Fallback to historical data
-            historical_df = self.get_historical_data(instrument, limit=1)
-            if not historical_df.empty:
-                return float(historical_df['close'].iloc[-1])
-            
+            # Try latest_prices first (most recent data)
+            if instrument in self.latest_prices:
+                price_data = self.latest_prices[instrument]
+                self.logger.debug(f"Retrieved latest price from latest_prices: {price_data['price']}")
+                return float(price_data['price'])
+            self.logger.warning(f"No latest price available for {instrument}")
             return None
             
         except Exception as e:
@@ -421,7 +336,6 @@ class DataWarehouse:
                 if instrument is None:
                     # Clear all data
                     self.intraday_data.clear()
-                    self.historical_data.clear()
                     self.logger.info("Cleared all data")
                 else:
                     # Clear specific instrument
@@ -429,13 +343,6 @@ class DataWarehouse:
                         if instrument in self.intraday_data:
                             del self.intraday_data[instrument]
                         file_path = self._get_data_file_path(instrument, 'intraday')
-                        if os.path.exists(file_path):
-                            os.remove(file_path)
-                    
-                    if data_type is None or data_type == 'historical':
-                        if instrument in self.historical_data:
-                            del self.historical_data[instrument]
-                        file_path = self._get_data_file_path(instrument, 'historical')
                         if os.path.exists(file_path):
                             os.remove(file_path)
                     
@@ -453,9 +360,7 @@ class DataWarehouse:
         """
         summary = {
             'intraday_instruments': list(self.intraday_data.keys()),
-            'historical_instruments': list(self.historical_data.keys()),
-            'total_intraday_candles': sum(len(df) for df in self.intraday_data.values()),
-            'total_historical_candles': sum(len(df) for df in self.historical_data.values())
+            'total_intraday_candles': sum(len(df) for df in self.intraday_data.values())
         }
         
         return summary

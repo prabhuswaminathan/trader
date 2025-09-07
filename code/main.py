@@ -9,7 +9,7 @@ import threading
 import tkinter as tk
 from datetime import datetime, time as dt_time, timedelta
 from typing import Optional, Dict, Any
-from upstox_agent import UpstoxAgent
+from upstox_agent import UpstoxAgent, TradingHolidayException
 from kite_agent import KiteAgent
 from chart_visualizer import LiveChartVisualizer, TkinterChartApp
 from broker_agent import BrokerAgent
@@ -67,6 +67,9 @@ class MarketDataApp:
         
         # Live feed debug logging flag
         self._live_feed_debug = False
+        
+        # Trading holiday flag
+        self._is_trading_holiday = False
     
     def _safe_datetime_diff(self, dt1, dt2, default_seconds=0):
         """Safely calculate datetime difference, handling None values"""
@@ -118,10 +121,7 @@ class MarketDataApp:
                 title=f"Nifty 50 Live Data - {self.broker_type.upper()}",
                 max_candles=500  # Increased to handle full intraday dataset (288+ candles)
             )
-            
-            # Load historical data for context
-            self._load_historical_data()
-            
+                        
             # Add instruments to chart
             for instrument_key, instrument_name in self.instruments[self.broker_type].items():
                 self.chart_visualizer.add_instrument(instrument_key, instrument_name)
@@ -229,83 +229,18 @@ class MarketDataApp:
             # Get the primary instrument (Nifty 50)
             primary_instrument = list(self.instruments[self.broker_type].keys())[0]
             
-            # Try to get stored historical data first
-            historical_df = datawarehouse.get_historical_data(primary_instrument, limit=50)
-            
-            if historical_df.empty:
-                # If no stored data, try to fetch from broker
-                logger.info(f"No stored historical data found for {primary_instrument}, fetching from broker...")
-                historical_data = self.agent.get_ohlc_historical_data(
-                    primary_instrument,     
-                    interval="day",
-                    start_time=None,  # Will use default (last year)
-                    end_time=None
-                )
-                
-                if historical_data:
-                    # Store the fetched data
-                    self.agent.store_ohlc_data(primary_instrument, historical_data, "historical")
-                    historical_df = datawarehouse.get_historical_data(primary_instrument, limit=50)
-            
-            if not historical_df.empty:
-                # Convert to the format expected by chart visualizer
-                for _, row in historical_df.iterrows():
-                    candle_data = {
-                        'timestamp': row.name,
-                        'open': float(row['open']),
-                        'high': float(row['high']),
-                        'low': float(row['low']),
-                        'close': float(row['close']),
-                        'volume': float(row.get('volume', 0))
-                    }
-                    self.chart_visualizer.update_data(primary_instrument, candle_data)
-                
-                logger.info(f"Loaded {len(historical_df)} historical candles for context")
-            
+            # Fetch fresh historical data from broker (no caching)
+            logger.info(f"Fetching fresh historical data for {primary_instrument}...")
+            historical_data = self.agent.get_ohlc_historical_data(
+                primary_instrument,     
+                unit="minutes",
+                interval=5,
+                days=5
+            )
+            return historical_data
         except Exception as e:
             logger.error(f"Error loading historical data: {e}")
-    
-    def fetch_and_display_historical_data(self):
-        """Fetch historical data from broker and display in chart"""
-        try:
-            # Get the primary instrument (Nifty 50)
-            primary_instrument = list(self.instruments[self.broker_type].keys())[0]
-            
-            logger.info(f"Fetching historical data for {primary_instrument}...")
-            
-            # Fetch historical data from broker
-            historical_data = self.agent.get_ohlc_historical_data(
-                primary_instrument, 
-                interval="day",
-                start_time=None,  # Will use default (last year)
-                end_time=None
-            )
-            
-            if historical_data:
-                logger.info(f"Fetched {len(historical_data)} historical candles from broker")
-                
-                # Store the fetched data
-                self.agent.store_ohlc_data(primary_instrument, historical_data, "historical")
-                
-                # Display in chart (limit to last 50 candles for performance)
-                display_data = historical_data[-50:] if len(historical_data) > 50 else historical_data
-                
-                for candle in display_data:
-                    self.chart_visualizer.update_data(primary_instrument, candle)
-                
-                logger.info(f"Displayed {len(display_data)} historical candles in chart")
-                
-                # Chart will be updated by animation loop, no need for force update
-                
-                return True
-            else:
-                logger.warning("No historical data received from broker")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error fetching historical data: {e}")
-            return False
-    
+        
     def fetch_and_display_intraday_data(self):
         """Fetch intraday data from broker and display in chart"""
         try:
@@ -322,46 +257,78 @@ class MarketDataApp:
             
             # Fetch 1-minute intraday data from broker
             logger.info(f"Calling get_ohlc_intraday_data with instrument: {primary_instrument}")
-            intraday_data = self.agent.get_ohlc_intraday_data(
-                primary_instrument, 
-                interval="1minute",
-                start_time=None,  # Will use default (last 24 hours)
-                end_time=None
-            )
-            logger.info(f"get_ohlc_intraday_data returned: {len(intraday_data) if intraday_data else 0} candles")
+            try:
+                intraday_data = self.agent.get_ohlc_intraday_data(
+                    primary_instrument, 
+                    interval="1minute",
+                    start_time=None,  # Will use default (last 24 hours)
+                    end_time=None
+                )
+                logger.info(f"get_ohlc_intraday_data returned: {len(intraday_data) if intraday_data else 0} candles")
+                
+                # Reset trading holiday flag if we successfully got data
+                self._is_trading_holiday = len(intraday_data) == 0
+                
+            except TradingHolidayException as e:
+                logger.warning(f"Trading holiday detected: {e}")
+                self._is_trading_holiday = True
+                
+
+            latest_price_index = -1
+            if self._is_trading_holiday:
+                intraday_data = self._load_historical_data()
+                latest_price_index = 0
             
-            if intraday_data:
-                logger.info(f"Fetched {len(intraday_data)} 1-minute candles from broker")
+            if intraday_data and len(intraday_data) > 0:
+                logger.info(f"Fetched {len(intraday_data)} candles from broker")
                 
                 # Store the latest price from the most recent candle for P&L calculations
-                if intraday_data:
-                    latest_candle = intraday_data[-1]  # Get the most recent candle
-                    latest_price = latest_candle.get('close', latest_candle.get('price', 0))
-                    latest_volume = latest_candle.get('volume', 0)
-                    
-                    # Store latest price in datawarehouse for P&L calculations
-                    datawarehouse.store_latest_price(primary_instrument, latest_price, latest_volume)
-                    logger.info(f"Stored latest price for P&L: {primary_instrument} = {latest_price}")
+                latest_candle = intraday_data[latest_price_index]  # Get the most recent candle
+                latest_price = latest_candle.get('close', latest_candle.get('price', 0))
+                latest_volume = latest_candle.get('volume', 0)
                 
-                # Store the raw intraday data (without consolidation)
-                self.agent.store_ohlc_data(primary_instrument, intraday_data, "intraday", 1)
-                logger.info(f"Stored {len(intraday_data)} 1-minute candles for P&L calculations")
+                # Store latest price in datawarehouse for P&L calculations
+                datawarehouse.store_latest_price(primary_instrument, latest_price, latest_volume)
+                logger.info(f"Stored latest price for P&L: {primary_instrument} = {latest_price}")
                 
-                # Display all the data in the chart (no artificial limit)
+                # Store the data
+                # if self._is_trading_holiday:
+                    # Historical data is not stored - fetched fresh each time
+                    # logger.info(f"Fetched {len(intraday_data)} 5-minute historical candles for trading holiday")
+                # else:
+                    # Store as intraday data for normal trading
+                    # self.agent.store_ohlc_data(primary_instrument, intraday_data, "intraday", 1)
+                    # logger.info(f"Stored {len(intraday_data)} 1-minute candles for P&L calculations")
+                
+                # Display all the data in the chart
                 display_data = intraday_data
                 
-                # Use the new consolidation method to properly display 5-minute candles
-                # Clear existing data and add fresh data
-                self.chart_visualizer.add_multiple_candles(primary_instrument, display_data, clear_existing=True)
                 
-                logger.info(f"Displayed all {len(display_data)} intraday candles in chart (consolidated to 5-minute)")
+                if self._is_trading_holiday:
+                    logger.info(f"Displayed {len(display_data)} 5-minute historical candles for trading holiday")
+                    # Store historical data directly in chart
+                    #get last 75 candles
+                    historical_ohlc_data = display_data[:75]
+                    historical_ohlc_data.sort(key=lambda x: x['timestamp'], reverse=True)
+                    self.chart_visualizer._store_historical_data(primary_instrument, historical_ohlc_data)
+                else:
+                    # Consolidate 1-minute data to 5-minute candles and display
+                    consolidated_data = self.chart_visualizer._consolidate_candles(display_data)
+                    logger.info(f"Consolidated {len(display_data)} 1-minute candles into {len(consolidated_data)} 5-minute candles")
+                    
+                    # Store consolidated data in chart
+                    self.chart_visualizer._store_historical_data(primary_instrument, consolidated_data)
+                    logger.info(f"Displayed all {len(consolidated_data)} intraday candles in chart (consolidated to 5-minute)")
                 
                 # Chart will be updated by animation loop, no need for force update
                 
                 return True
             else:
-                logger.warning("No intraday data received from broker")
-                return False
+                # No intraday data available - fetch historical data
+                logger.warning("No intraday data received from broker - fetching historical data")
+                self._is_trading_holiday = True  # Set flag to disable timer
+                
+                return True
                 
         except Exception as e:
             logger.error(f"Error fetching intraday data: {e}")
@@ -381,7 +348,7 @@ class MarketDataApp:
             # Upstox data comes as Protobuf messages, extract price information
             data_str = str(data)
             
-            # Try to extract price information from the data using multiple patterns
+            # Try to extract price information from the data using multiple     
             import re
             price = None
             volume = 0
@@ -507,6 +474,12 @@ class MarketDataApp:
             
             while self.timer_running:
                 current_time = datetime.now().time()
+                
+                # Check if it's a trading holiday
+                if self._is_trading_holiday:
+                    logger.info("Trading holiday detected - timer will not fetch data")
+                    time.sleep(300)  # Wait 5 minutes before checking again
+                    continue
                 
                 # Check if we're within market hours
                 if self._is_market_hours(current_time):
@@ -683,12 +656,16 @@ class MarketDataApp:
             self.chart_app.start_btn.config(state=tk.DISABLED)
             self.chart_app.stop_btn.config(state=tk.NORMAL)
             
-            # Start live data streaming
-            self.start_live_data()
+            if not self._is_trading_holiday:
+                # Start live data streaming
+                self.start_live_data()
             
-            # Start the timer for automatic data fetching
-            self.start_timer()
-            self.chart_app.status_label.config(text="Status: Running - Timer active (5min + 10s intervals)")
+            # Start the timer for automatic data fetching (only if not trading holiday)
+            if not self._is_trading_holiday:
+                self.start_timer()
+                self.chart_app.status_label.config(text="Status: Running - Timer active (5min + 10s intervals)")
+            else:
+                self.chart_app.status_label.config(text="Status: Historical Data Mode - No refresh needed")
             
             # Auto-display strategy in Grid 2 on startup
             try:
@@ -765,7 +742,18 @@ class MarketDataApp:
                         if trade_id:
                             # Get the trade object directly from strategy manager
                             # Since we're not storing in DB, we need to recreate it
-                            spot_price = result.get('spot_price', 25000)
+                            
+                            # Get spot price from datawarehouse instead of hardcoding
+                            primary_instrument = list(self.instruments[self.broker_type].keys())[0]
+                            spot_price = datawarehouse.get_latest_price(primary_instrument)
+                            
+                            # Fallback to result spot_price or default if datawarehouse doesn't have data
+                            if spot_price is None:
+                                spot_price = result.get('spot_price', 250)
+                                logger.warning(f"No spot price available from datawarehouse, using fallback: {spot_price}")
+                            else:
+                                logger.info(f"Retrieved spot price from datawarehouse: {spot_price}")
+                            
                             trade = self.strategy_manager.create_iron_condor_strategy_fallback(spot_price)
                             
                             # Calculate payoff data
@@ -773,7 +761,7 @@ class MarketDataApp:
                             
                             # Display in Grid 2
                             self.chart_app.display_iron_condor_strategy(trade, spot_price, payoff_data)
-                            logger.info(f"Displayed Iron Condor strategy in Grid 2")
+                            logger.info(f"Displayed Iron Condor strategy in Grid 2 with spot price: {spot_price}")
                     except Exception as e:
                         logger.error(f"Error displaying Iron Condor strategy: {e}")
                         
@@ -841,12 +829,8 @@ def main():
         logger.info("Market Data Application initialized")
         logger.info("Available broker types: upstox, kite")
         
-        # Fetch and display historical data for context
-        logger.info("Fetching historical data for context...")
-        if app.fetch_and_display_historical_data():
-            logger.info("✓ Historical data loaded successfully")
-        else:
-            logger.warning("⚠ Failed to load historical data")
+        # Historical data is now fetched fresh during chart initialization
+        logger.info("Historical data will be fetched fresh during chart initialization...")
         
         # Fetch and display intraday data for candlestick chart
         logger.info("Fetching intraday data for candlestick chart...")

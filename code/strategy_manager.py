@@ -42,35 +42,7 @@ class StrategyManager:
         except Exception as e:
             logger.error(f"Error fetching open positions: {e}")
             return []
-    
-    def get_current_spot_price(self) -> float:
-        """Get current NIFTY spot price"""
-        try:
-            if not self.option_chain:
-                raise ValueError("Option chain not initialized")
-            
-            # Get current option chain data
-            options = self.option_chain.fetch()
-            if not options:
-                raise ValueError("No option data available")
-            
-            # Find ATM option to get spot price
-            for option in options:
-                if option.get('underlying_spot_price'):
-                    return float(option['underlying_spot_price'])
-            
-            # Fallback: estimate from strike prices
-            strikes = [opt['strike_price'] for opt in options if opt.get('strike_price')]
-            if strikes:
-                return float(np.median(strikes))
-            
-            raise ValueError("Could not determine spot price")
-            
-        except Exception as e:
-            logger.error(f"Error getting spot price: {e}")
-            # Fallback to a reasonable estimate
-            return 25000.0
-    
+        
     def get_nearest_strike(self, spot_price: float, strike_interval: int = 50) -> int:
         """Get the nearest strike price to spot price"""
         return int(round(spot_price / strike_interval) * strike_interval)
@@ -437,7 +409,7 @@ Breakevens: {payoff_data["breakevens"]}"""
         """Main method to manage positions and create strategies"""
         try:
             # Try to get real spot price, fallback to default if API fails
-            spot_price = 25000.0  # Default fallback
+            spot_price = 250.0  # Default fallback
             try:
                 # Initialize option chain
                 self.initialize_option_chain(access_token)
@@ -445,7 +417,7 @@ Breakevens: {payoff_data["breakevens"]}"""
                 logger.info(f"Current NIFTY spot price: {spot_price}")
             except Exception as api_error:
                 logger.warning(f"API error, using fallback spot price: {api_error}")
-                spot_price = 25000.0  # Use fallback price
+                spot_price = 250.0  # Use fallback price
             
             # Always create a new Iron Condor strategy for display
             # No database checking since positions are not stored until broker execution

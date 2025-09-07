@@ -163,7 +163,8 @@ class BrokerAgent(ABC):
         if data_type == "intraday":
             datawarehouse.store_intraday_data(instrument, ohlc_data, interval_minutes)
         elif data_type == "historical":
-            datawarehouse.store_historical_data(instrument, ohlc_data)
+            # Historical data is no longer stored - it should be fetched fresh each time
+            self.logger.info(f"Historical data not stored - will be fetched fresh when needed")
         else:
             self.logger.error(f"Invalid data_type: {data_type}. Must be 'intraday' or 'historical'")
 
@@ -189,7 +190,9 @@ class BrokerAgent(ABC):
         if data_type == "intraday":
             return datawarehouse.get_intraday_data(instrument, start_time, end_time, limit)
         elif data_type == "historical":
-            return datawarehouse.get_historical_data(instrument, start_time, end_time, limit)
+            # Historical data is no longer stored - return empty DataFrame
+            self.logger.info(f"Historical data not available from storage - must be fetched fresh")
+            return pd.DataFrame()
         else:
             self.logger.error(f"Invalid data_type: {data_type}. Must be 'intraday' or 'historical'")
             return pd.DataFrame()

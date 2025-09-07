@@ -25,6 +25,9 @@ class LiveChartVisualizer:
         self.candle_data = {}  # {instrument: deque of OHLCV data}
         self.current_prices = {}  # {instrument: current price}
         self.last_update_time = None  # Track last data update time
+        self.historical_data = {}  # Store full historical data for scrolling
+        self.current_view_start = 0  # Start index for current view
+        self.view_size = 75  # Number of candles to display (one trading day)
         
         # Tooltip functionality
         self.tooltip = None
@@ -226,7 +229,6 @@ class LiveChartVisualizer:
             # Convert timestamp to datetime if it's a string
             timestamp = ohlc_data.get('timestamp')
             if isinstance(timestamp, str):
-                from datetime import datetime
                 timestamp = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
             elif timestamp is None:
                 timestamp = datetime.now()
@@ -261,44 +263,6 @@ class LiveChartVisualizer:
         except Exception as e:
             self.logger.error(f"Error adding complete candle: {e}")
     
-    def add_multiple_candles(self, instrument_key, candles_data, clear_existing=True):
-        """Add multiple candles and consolidate them into the appropriate timeframe"""
-        try:
-            if not candles_data:
-                return
-            
-            if instrument_key not in self.candle_data:
-                self.candle_data[instrument_key] = deque(maxlen=self.max_candles)
-            
-            # Clear existing data if requested (for fresh updates)
-            if clear_existing:
-                self.candle_data[instrument_key].clear()
-                self.logger.info(f"Cleared existing data for {instrument_key}")
-            
-            # Sort candles by timestamp
-            sorted_candles = sorted(candles_data, key=lambda x: x.get('timestamp', datetime.now()))
-            
-            # Consolidate 1-minute candles into 5-minute candles
-            consolidated_candles = self._consolidate_candles(sorted_candles)
-            
-            # Add consolidated candles to chart
-            for candle in consolidated_candles:
-                self.candle_data[instrument_key].append(candle)
-                self.current_prices[instrument_key] = candle['close']
-                
-                # Update last update time
-                candle_time = candle['timestamp']
-                if isinstance(candle_time, datetime):
-                    self.last_update_time = candle_time
-                else:
-                    self.last_update_time = datetime.fromtimestamp(candle_time)
-            
-            self.logger.debug(f"Added {len(consolidated_candles)} consolidated 5-min candles from {len(candles_data)} 1-min candles for {instrument_key}")
-            
-            # Chart will be updated by animation loop, no need for immediate redraw
-                
-        except Exception as e:
-            self.logger.error(f"Error adding multiple candles: {e}")
     
     def _consolidate_candles(self, candles_data):
         """Consolidate 1-minute candles into 5-minute candles"""
@@ -368,6 +332,44 @@ class LiveChartVisualizer:
         except Exception as e:
             self.logger.error(f"Error consolidating candles: {e}")
             return []
+    
+    def _store_historical_data(self, instrument_key, historical_data):
+        """Store historical data in the chart for display"""
+        try:
+            if not historical_data:
+                self.logger.warning(f"No historical data to store for {instrument_key}")
+                return
+            
+            # Clear existing data for this instrument
+            if instrument_key in self.candle_data:
+                self.candle_data[instrument_key].clear()
+            else:
+                self.candle_data[instrument_key] = deque(maxlen=self.max_candles)
+            
+            # Store historical data
+            for candle in historical_data:
+                self.candle_data[instrument_key].append(candle)
+            
+            # Update current price to the latest close price
+            if historical_data:
+                latest_candle = historical_data[-1]
+                self.current_prices[instrument_key] = latest_candle.get('close', 0)
+                
+                # Update last update time
+                latest_timestamp = latest_candle.get('timestamp')
+                if isinstance(latest_timestamp, datetime):
+                    self.last_update_time = latest_timestamp
+                else:
+                    self.last_update_time = datetime.fromtimestamp(latest_timestamp)
+            
+            self.logger.info(f"Stored {len(historical_data)} historical candles for {instrument_key}")
+            
+            # Force chart update to display the data
+            if self.is_running:
+                self.force_chart_update()
+            
+        except Exception as e:
+            self.logger.error(f"Error storing historical data for {instrument_key}: {e}")
     
     def _update_candle_data(self, instrument_key, price, volume, timestamp):
         """Update candle data with new tick"""
@@ -474,6 +476,9 @@ class LiveChartVisualizer:
             self.price_ax.set_xlabel(xlabel_text)
             self.price_ax.grid(True, alpha=0.3)
             
+            # Check if we have any data to display
+            has_data = False
+            
             # Plot candlesticks for each instrument
             for instrument_key, candle_data in self.candle_data.items():
                 if not candle_data:
@@ -486,12 +491,21 @@ class LiveChartVisualizer:
                 
                 # Plot candlesticks
                 self._plot_candlesticks(df, instrument_key)
+                has_data = True
             
-            # Update Y-axis scale based on price range
-            self._update_y_axis_scale()
-            
-            # Format x-axis with time display
-            self._format_x_axis_time()
+            # If no data, show a message
+            if not has_data:
+                self.price_ax.text(0.5, 0.5, 'No data available\nWaiting for market data...', 
+                                 transform=self.price_ax.transAxes, ha='center', va='center',
+                                 fontsize=14, color='gray', alpha=0.7)
+                self.price_ax.set_ylim(0, 1)
+                self.price_ax.set_xlim(0, 1)
+            else:
+                # Update Y-axis scale based on price range
+                self._update_y_axis_scale()
+                
+                # Format x-axis with time display
+                self._format_x_axis_time()
             
             # Adjust layout
             plt.tight_layout()
@@ -669,7 +683,9 @@ class LiveChartVisualizer:
                 close_price = row['close']
                 
                 # Skip invalid data
-                if open_price <= 0 or high_price <= 0 or low_price <= 0 or close_price <= 0:
+                if (open_price <= 0 or high_price <= 0 or low_price <= 0 or close_price <= 0 or
+                    not all(isinstance(x, (int, float)) and not np.isnan(x) for x in [open_price, high_price, low_price, close_price])):
+                    self.logger.warning(f"Skipping invalid candle data: O={open_price}, H={high_price}, L={low_price}, C={close_price}")
                     continue
                 
                 # Determine candle color (green for up, red for down)
@@ -728,7 +744,8 @@ class LiveChartVisualizer:
         
         # Start animation with reduced frequency to prevent flickering
         self.ani = animation.FuncAnimation(
-            self.fig, self._animate, interval=2000, blit=False
+            self.fig, self._animate, interval=2000, blit=False, 
+            cache_frame_data=False, save_count=100
         )
         
         self.logger.info("Live chart started")
@@ -759,6 +776,66 @@ class LiveChartVisualizer:
         if instrument_key in self.candle_data:
             return list(self.candle_data[instrument_key])
         return []
+    
+    def set_historical_data(self, instrument_key, historical_data):
+        """Set full historical data for scrolling functionality"""
+        self.historical_data[instrument_key] = historical_data
+        self.current_view_start = max(0, len(historical_data) - self.view_size)
+        self.logger.info(f"Stored {len(historical_data)} historical candles for {instrument_key}")
+    
+    def set_status_callback(self, callback):
+        """Set callback function for status updates"""
+        self.status_callback = callback
+    
+    def scroll_left(self, instrument_key):
+        """Scroll to show earlier data"""
+        if instrument_key not in self.historical_data:
+            return False
+        
+        historical_data = self.historical_data[instrument_key]
+        if self.current_view_start > 0:
+            self.current_view_start = max(0, self.current_view_start - self.view_size)
+            self._update_display_data(instrument_key)
+            return True
+        return False
+    
+    def scroll_right(self, instrument_key):
+        """Scroll to show later data"""
+        if instrument_key not in self.historical_data:
+            return False
+        
+        historical_data = self.historical_data[instrument_key]
+        max_start = max(0, len(historical_data) - self.view_size)
+        if self.current_view_start < max_start:
+            self.current_view_start = min(max_start, self.current_view_start + self.view_size)
+            self._update_display_data(instrument_key)
+            return True
+        return False
+    
+    def _update_display_data(self, instrument_key):
+        """Update the displayed data based on current view position"""
+        if instrument_key not in self.historical_data:
+            return
+        
+        historical_data = self.historical_data[instrument_key]
+        end_index = min(self.current_view_start + self.view_size, len(historical_data))
+        view_data = historical_data[self.current_view_start:end_index]
+        
+        # Clear and update display data
+        if instrument_key in self.candle_data:
+            self.candle_data[instrument_key].clear()
+        
+        for candle in view_data:
+            if instrument_key not in self.candle_data:
+                self.candle_data[instrument_key] = deque(maxlen=self.max_candles)
+            self.candle_data[instrument_key].append(candle)
+            self.current_prices[instrument_key] = candle['close']
+        
+        self.logger.info(f"Updated view: showing candles {self.current_view_start}-{end_index} of {len(historical_data)}")
+        
+        # Update status if we have a status callback
+        if hasattr(self, 'status_callback'):
+            self.status_callback(f"View: {self.current_view_start}-{end_index} of {len(historical_data)} candles")
     
     def process_data_queue(self):
         """Manually process the data queue (useful for testing)"""
@@ -1075,6 +1152,18 @@ class TkinterChartApp:
         
         self.setup_ui()
         
+        # Set up keyboard bindings for scrolling
+        self.root.bind('<Left>', lambda e: self.scroll_chart_left())
+        self.root.bind('<Right>', lambda e: self.scroll_chart_right())
+        self.root.bind('<a>', lambda e: self.scroll_chart_left())
+        self.root.bind('<d>', lambda e: self.scroll_chart_right())
+        
+        # Focus the root window to receive key events
+        self.root.focus_set()
+        
+        # Set up status callback for scrolling updates
+        self.chart.set_status_callback(self.update_status)
+        
         # Maximize window after UI is set up
         self.root.after(100, self._maximize_window)
     
@@ -1154,6 +1243,15 @@ class TkinterChartApp:
                                                command=self.manage_strategies)
         self.manage_strategies_btn.pack(side=tk.LEFT, padx=(0, 5))
         
+        # Chart scrolling controls
+        self.scroll_left_btn = ttk.Button(control_frame, text="← Earlier", 
+                                        command=self.scroll_chart_left)
+        self.scroll_left_btn.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.scroll_right_btn = ttk.Button(control_frame, text="Later →", 
+                                         command=self.scroll_chart_right)
+        self.scroll_right_btn.pack(side=tk.LEFT, padx=(0, 5))
+        
         # Status label
         self.status_label = ttk.Label(control_frame, text="Status: Stopped")
         self.status_label.pack(side=tk.LEFT, padx=(20, 0))
@@ -1231,7 +1329,6 @@ class TkinterChartApp:
             initial_label.pack(pady=20)
             
             # Last updated
-            from datetime import datetime
             last_updated = datetime.now().strftime("%H:%M:%S")
             update_label = ttk.Label(self.grid2_frame, 
                                    text=f"Initialized: {last_updated}", 
@@ -1362,6 +1459,40 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
     def manage_strategies(self):
         """Placeholder for manage strategies - will be overridden by main app"""
         self.status_label.config(text="Status: Manage Strategies button clicked")
+    
+    def scroll_chart_left(self):
+        """Scroll chart to show earlier data"""
+        try:
+            # Get the primary instrument (assuming Nifty 50)
+            primary_instrument = "NSE_INDEX|Nifty 50"
+            if self.chart.scroll_left(primary_instrument):
+                self.chart.force_chart_update()
+                self.logger.info("Scrolled chart left to show earlier data")
+            else:
+                self.logger.info("Already at the beginning of historical data")
+        except Exception as e:
+            self.logger.error(f"Error scrolling chart left: {e}")
+    
+    def scroll_chart_right(self):
+        """Scroll chart to show later data"""
+        try:
+            # Get the primary instrument (assuming Nifty 50)
+            primary_instrument = "NSE_INDEX|Nifty 50"
+            if self.chart.scroll_right(primary_instrument):
+                self.chart.force_chart_update()
+                self.logger.info("Scrolled chart right to show later data")
+            else:
+                self.logger.info("Already at the end of historical data")
+        except Exception as e:
+            self.logger.error(f"Error scrolling chart right: {e}")
+    
+    def update_status(self, message):
+        """Update the status label with scrolling information"""
+        try:
+            if hasattr(self, 'status_label'):
+                self.status_label.config(text=f"Status: {message}")
+        except Exception as e:
+            self.logger.error(f"Error updating status: {e}")
     
     def start_timer(self):
         """Placeholder for start timer - will be overridden by main app"""

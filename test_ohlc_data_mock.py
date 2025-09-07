@@ -46,7 +46,8 @@ def test_datawarehouse_functionality():
         logger.info(f"✅ Created {len(historical_data)} historical candles")
         
         # Store historical data
-        dw.store_historical_data("NSE_INDEX|Nifty 50", historical_data)
+        # Historical data is no longer stored - fetched fresh each time
+        logger.info("Historical data not stored - will be fetched fresh when needed")
         logger.info("✅ Historical data stored in warehouse")
         
         # Create mock intraday data (1-minute)
@@ -81,12 +82,9 @@ def test_datawarehouse_functionality():
         # Test data retrieval
         logger.info("📊 Testing data retrieval...")
         
-        # Get historical data
-        historical_df = dw.get_historical_data("NSE_INDEX|Nifty 50", limit=5)
-        if not historical_df.empty:
-            logger.info(f"✅ Retrieved {len(historical_df)} historical candles")
-            logger.info(f"   Date range: {historical_df.index[0]} to {historical_df.index[-1]}")
-            logger.info(f"   Price range: {historical_df['low'].min():.2f} - {historical_df['high'].max():.2f}")
+        # Historical data is no longer stored - test fetching fresh data
+        logger.info("📈 Historical data is no longer stored - must be fetched fresh from broker")
+        logger.info("✅ Historical data storage removed - fresh data will be fetched each time")
         
         # Get intraday data
         intraday_df = dw.get_intraday_data("NSE_INDEX|Nifty 50", limit=5)
@@ -300,8 +298,8 @@ def test_broker_agent_interface():
         # Test data storage
         logger.info("💾 Testing data storage...")
         if historical_data:
-            agent.store_ohlc_data(instrument, historical_data, "historical")
-            logger.info("✅ Historical data stored")
+            # Historical data is no longer stored - fetched fresh each time
+            logger.info("📈 Historical data not stored - will be fetched fresh when needed")
         
         if intraday_data:
             agent.store_ohlc_data(instrument, intraday_data, "intraday", 1)
@@ -309,9 +307,8 @@ def test_broker_agent_interface():
         
         # Test data retrieval
         logger.info("📊 Testing data retrieval...")
-        stored_historical = agent.get_stored_ohlc_data(instrument, "historical")
-        if not stored_historical.empty:
-            logger.info(f"✅ Retrieved {len(stored_historical)} historical records")
+        # Historical data is no longer stored - must be fetched fresh
+        logger.info("📈 Historical data not available from storage - must be fetched fresh from broker")
         
         stored_intraday = agent.get_stored_ohlc_data(instrument, "intraday")
         if not stored_intraday.empty:

@@ -49,7 +49,8 @@ def demo_ohlc_integration():
         
         # Step 3: Store historical data
         logger.info("📊 Step 3: Storing historical data")
-        dw.store_historical_data("NSE_INDEX|Nifty 50", historical_data)
+        # Historical data is no longer stored - fetched fresh each time
+        logger.info("Historical data not stored - will be fetched fresh when needed")
         logger.info("✅ Historical data stored in warehouse")
         
         # Step 4: Create mock intraday data (1-minute)
@@ -90,20 +91,9 @@ def demo_ohlc_integration():
         
         # Step 8: Load historical data into chart
         logger.info("📊 Step 8: Loading historical data into chart")
-        historical_df = dw.get_historical_data("NSE_INDEX|Nifty 50", limit=5)
-        
-        for _, row in historical_df.iterrows():
-            candle_data = {
-                'timestamp': row.name,
-                'open': float(row['open']),
-                'high': float(row['high']),
-                'low': float(row['low']),
-                'close': float(row['close']),
-                'volume': float(row.get('volume', 0))
-            }
-            chart.update_data("NSE_INDEX|Nifty 50", candle_data)
-        
-        logger.info(f"✅ Loaded {len(historical_df)} historical candles into chart")
+        # Historical data is no longer stored - must be fetched fresh from broker
+        logger.info("📈 Historical data not available from storage - must be fetched fresh from broker")
+        logger.info("✅ Historical data storage removed - fresh data will be fetched each time")
         
         # Step 9: Load intraday data into chart
         logger.info("📊 Step 9: Loading intraday data into chart")
@@ -258,9 +248,8 @@ def demo_main_app_integration():
         if historical_data:
             logger.info(f"✅ Fetched {len(historical_data)} historical candles")
             
-            # Store in warehouse
-            agent.store_ohlc_data(instrument, historical_data, "historical")
-            logger.info("✅ Historical data stored in warehouse")
+            # Historical data is no longer stored - fetched fresh each time
+            logger.info("📈 Historical data not stored - will be fetched fresh when needed")
         
         # Step 3: Fetch intraday data
         logger.info("📊 Step 3: Fetching intraday data")
@@ -278,11 +267,10 @@ def demo_main_app_integration():
         
         # Step 4: Retrieve stored data
         logger.info("📊 Step 4: Retrieving stored data")
-        stored_historical = agent.get_stored_ohlc_data(instrument, "historical")
+        # Historical data is no longer stored - must be fetched fresh from broker
+        logger.info("📈 Historical data not available from storage - must be fetched fresh from broker")
         stored_intraday = agent.get_stored_ohlc_data(instrument, "intraday")
         
-        if not stored_historical.empty:
-            logger.info(f"✅ Retrieved {len(stored_historical)} historical records")
         if not stored_intraday.empty:
             logger.info(f"✅ Retrieved {len(stored_intraday)} intraday records")
         
