@@ -244,6 +244,17 @@ class MarketDataApp:
                 interval=5,
                 days=5
             )
+            
+            # Update datawarehouse with latest price from historical data
+            if historical_data and len(historical_data) > 0:
+                latest_candle = historical_data[0]  # Historical data is sorted with most recent first
+                latest_price = latest_candle.get('close', latest_candle.get('price', 0))
+                latest_volume = latest_candle.get('volume', 0)
+                
+                # Store latest price in datawarehouse for P&L calculations
+                datawarehouse.store_latest_price(primary_instrument, latest_price, latest_volume)
+                logger.info(f"Updated datawarehouse with latest price from historical data: {primary_instrument} = {latest_price}")
+            
             return historical_data
         except Exception as e:
             logger.error(f"Error loading historical data: {e}")
@@ -261,6 +272,15 @@ class MarketDataApp:
             
             if historical_data and len(historical_data) > 0:
                 logger.info(f"Fetched {len(historical_data)} historical candles from broker")
+                
+                # Store the latest price from the most recent historical candle
+                latest_candle = historical_data[0]  # Historical data is sorted with most recent first
+                latest_price = latest_candle.get('close', latest_candle.get('price', 0))
+                latest_volume = latest_candle.get('volume', 0)
+                
+                # Store latest price in datawarehouse for P&L calculations
+                datawarehouse.store_latest_price(primary_instrument, latest_price, latest_volume)
+                logger.info(f"Stored latest price from historical data: {primary_instrument} = {latest_price}")
                 
                 # Store historical data directly in chart
                 self.chart_visualizer._store_historical_data(primary_instrument, historical_data)
