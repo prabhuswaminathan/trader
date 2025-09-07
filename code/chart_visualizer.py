@@ -1274,10 +1274,20 @@ class TkinterChartApp:
             for widget in self.grid2_frame.winfo_children():
                 widget.destroy()
             
+            # Header frame with title and Trade All button
+            header_frame = ttk.Frame(self.grid2_frame)
+            header_frame.pack(fill=tk.X, pady=(10, 5))
+            
             # Title
-            title_label = ttk.Label(self.grid2_frame, text="Strategy Display", 
+            title_label = ttk.Label(header_frame, text="Strategy Display", 
                                   font=("Arial", 14, "bold"))
-            title_label.pack(pady=(10, 5))
+            title_label.pack(side=tk.LEFT)
+            
+            # Trade All button (top right)
+            self.trade_all_button = ttk.Button(header_frame, text="Trade All", 
+                                             command=self._show_trade_all_window,
+                                             state="disabled")  # Initially disabled
+            self.trade_all_button.pack(side=tk.RIGHT, padx=(10, 0))
             
             # Initial state message
             initial_label = ttk.Label(self.grid2_frame, 
@@ -1305,10 +1315,20 @@ class TkinterChartApp:
             for widget in self.grid2_frame.winfo_children():
                 widget.destroy()
             
-            # Update title
-            title_label = ttk.Label(self.grid2_frame, text="Iron Condor Strategy", 
+            # Header frame with title and Trade All button
+            header_frame = ttk.Frame(self.grid2_frame)
+            header_frame.pack(fill=tk.X, pady=(10, 5))
+            
+            # Title
+            title_label = ttk.Label(header_frame, text="Iron Condor Strategy", 
                                   font=("Arial", 14, "bold"))
-            title_label.pack(pady=(10, 5))
+            title_label.pack(side=tk.LEFT)
+            
+            # Trade All button (top right)
+            self.trade_all_button = ttk.Button(header_frame, text="Trade All", 
+                                             command=self._show_trade_all_window,
+                                             state="normal")  # Enabled when strategy is displayed
+            self.trade_all_button.pack(side=tk.RIGHT, padx=(10, 0))
             
             # Create matplotlib figure for Iron Condor
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -1565,6 +1585,139 @@ Breakevens: {', '.join(breakeven_texts)}"""
             # Force exit even if there's an error
             import os
             os._exit(0)
+    
+    def _show_trade_all_window(self):
+        """Show window with all trades that would be executed in Iron Condor strategy"""
+        try:
+            if not hasattr(self, '_current_trade') or not self._current_trade:
+                self.logger.warning("No current trade available for Trade All window")
+                return
+            
+            # Create new window
+            trade_window = tk.Toplevel(self.root)
+            trade_window.title("Iron Condor - Trade All")
+            trade_window.geometry("800x600")
+            trade_window.resizable(True, True)
+            
+            # Center the window
+            trade_window.transient(self.root)
+            trade_window.grab_set()
+            
+            # Main frame
+            main_frame = ttk.Frame(trade_window)
+            main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            
+            # Title
+            title_label = ttk.Label(main_frame, text="Iron Condor Strategy - All Trades", 
+                                  font=("Arial", 16, "bold"))
+            title_label.pack(pady=(0, 10))
+            
+            # Strategy summary
+            summary_frame = ttk.LabelFrame(main_frame, text="Strategy Summary", padding=10)
+            summary_frame.pack(fill=tk.X, pady=(0, 10))
+            
+            trade = self._current_trade
+            summary_text = f"""Strategy: {trade.strategy_name}
+Underlying: {trade.underlying_instrument}
+Trade ID: {trade.trade_id}
+Total Legs: {len(trade.legs)}"""
+            
+            summary_label = ttk.Label(summary_frame, text=summary_text, font=("Arial", 10))
+            summary_label.pack(anchor=tk.W)
+            
+            # Trades list
+            trades_frame = ttk.LabelFrame(main_frame, text="Individual Trades", padding=10)
+            trades_frame.pack(fill=tk.BOTH, expand=True)
+            
+            # Create treeview for trades
+            columns = ("Leg", "Instrument", "Type", "Strike", "Position", "Quantity", "Entry Price")
+            tree = ttk.Treeview(trades_frame, columns=columns, show="headings", height=15)
+            
+            # Configure columns
+            tree.heading("Leg", text="Leg #")
+            tree.heading("Instrument", text="Instrument")
+            tree.heading("Type", text="Type")
+            tree.heading("Strike", text="Strike Price")
+            tree.heading("Position", text="Position")
+            tree.heading("Quantity", text="Quantity")
+            tree.heading("Entry Price", text="Entry Price")
+            
+            # Set column widths
+            tree.column("Leg", width=50)
+            tree.column("Instrument", width=200)
+            tree.column("Type", width=80)
+            tree.column("Strike", width=100)
+            tree.column("Position", width=80)
+            tree.column("Quantity", width=80)
+            tree.column("Entry Price", width=100)
+            
+            # Add scrollbar
+            scrollbar = ttk.Scrollbar(trades_frame, orient=tk.VERTICAL, command=tree.yview)
+            tree.configure(yscrollcommand=scrollbar.set)
+            
+            # Configure row colors
+            tree.tag_configure("long_trade", background="#ccffcc")  # Light green for LONG trades
+            tree.tag_configure("short_trade", background="#ffcccc")  # Light red for SHORT trades
+            
+            # Pack treeview and scrollbar
+            tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            # Populate trades
+            for i, leg in enumerate(trade.legs, 1):
+                position_text = "LONG" if leg.position_type.value == "LONG" else "SHORT"
+                option_type_text = "CALL" if leg.option_type.value == "CALL" else "PUT"
+                
+                # Determine row color based on position type (LONG/SHORT)
+                row_tag = "long_trade" if leg.position_type.value == "LONG" else "short_trade"
+                
+                tree.insert("", "end", values=(
+                    i,
+                    leg.instrument_name,
+                    option_type_text,
+                    f"₹{leg.strike_price:,.0f}",
+                    position_text,
+                    leg.quantity,
+                    f"₹{leg.entry_price:.2f}"
+                ), tags=(row_tag,))
+            
+            # Footer with strategy metrics
+            footer_frame = ttk.Frame(main_frame)
+            footer_frame.pack(fill=tk.X, pady=(10, 0))
+            
+            # Get max profit and max loss from payoff data
+            if hasattr(self, '_current_payoff_data') and self._current_payoff_data:
+                max_profit = self._current_payoff_data.get('max_profit', 0)
+                max_loss = self._current_payoff_data.get('max_loss', 0)
+            else:
+                # Calculate from trade data if payoff data not available
+                total_premium_collected = sum(leg.entry_price * leg.quantity for leg in trade.legs 
+                                            if leg.position_type.value == "SHORT")
+                total_premium_paid = sum(leg.entry_price * leg.quantity for leg in trade.legs 
+                                       if leg.position_type.value == "LONG")
+                net_premium = total_premium_collected - total_premium_paid
+                max_profit = net_premium
+                max_loss = -net_premium
+            
+            metrics_text = f"""Max Profit: ₹{max_profit:,.0f}
+Max Loss: ₹{max_loss:,.0f}"""
+            
+            metrics_label = ttk.Label(footer_frame, text=metrics_text, font=("Arial", 10, "bold"))
+            metrics_label.pack(anchor=tk.W)
+            
+            # Close button
+            close_button = ttk.Button(footer_frame, text="Close", command=trade_window.destroy)
+            close_button.pack(side=tk.RIGHT, padx=(10, 0))
+            
+            # Focus on the window
+            trade_window.focus_set()
+            
+            self.logger.info("Opened Trade All window with Iron Condor trades")
+            
+        except Exception as e:
+            self.logger.error(f"Error showing trade all window: {e}")
+            import tkinter.messagebox as msgbox
+            msgbox.showerror("Error", f"Failed to open trade window: {e}")
         
     def run(self):
         """Run the application"""
