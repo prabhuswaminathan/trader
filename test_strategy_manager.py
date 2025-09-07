@@ -43,14 +43,15 @@ def test_strategy_manager():
         open_positions = strategy_manager.get_open_positions()
         print(f"   Found {len(open_positions)} open positions")
         
-        # Test 2: Get current spot price
+        # Test 2: Get current spot price (using fallback method)
         print("\n2. Getting current spot price...")
         try:
             strategy_manager.initialize_option_chain(access_token)
-            spot_price = strategy_manager.get_current_spot_price()
-            print(f"   Current NIFTY spot price: ₹{spot_price:,.2f}")
+            # Since get_current_spot_price is removed, use fallback
+            spot_price = 25000  # Fallback price for testing
+            print(f"   Using fallback NIFTY spot price: ₹{spot_price:,.2f}")
         except Exception as e:
-            print(f"   Error getting spot price: {e}")
+            print(f"   Error initializing option chain: {e}")
             spot_price = 25000  # Fallback
         
         # Test 3: Calculate strikes for Iron Condor

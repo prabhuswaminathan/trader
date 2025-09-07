@@ -1206,55 +1206,13 @@ class TkinterChartApp:
         main_frame = ttk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
         
-        # Control frame
+        # Control frame (minimal - only status label)
         control_frame = ttk.Frame(main_frame)
         control_frame.pack(fill=tk.X, pady=(0, 10))
         
-        # Buttons
-        self.start_btn = ttk.Button(control_frame, text="Start Chart", 
-                                   command=self.start_chart)
-        self.start_btn.pack(side=tk.LEFT, padx=(0, 5))
-        
-        self.stop_btn = ttk.Button(control_frame, text="Stop Chart", 
-                                  command=self.stop_chart)
-        self.stop_btn.pack(side=tk.LEFT, padx=(0, 5))
-        
-        # Data fetch buttons
-        self.fetch_historical_btn = ttk.Button(control_frame, text="Fetch Historical", 
-                                              command=self.fetch_historical)
-        self.fetch_historical_btn.pack(side=tk.LEFT, padx=(0, 5))
-        
-        self.fetch_intraday_btn = ttk.Button(control_frame, text="Fetch Intraday", 
-                                            command=self.fetch_intraday)
-        self.fetch_intraday_btn.pack(side=tk.LEFT, padx=(0, 5))
-        
-        # Timer buttons
-        self.start_timer_btn = ttk.Button(control_frame, text="Start Timer", 
-                                         command=self.start_timer)
-        self.start_timer_btn.pack(side=tk.LEFT, padx=(0, 5))
-        
-        self.stop_timer_btn = ttk.Button(control_frame, text="Stop Timer", 
-                                        command=self.stop_timer)
-        self.stop_timer_btn.pack(side=tk.LEFT, padx=(0, 5))
-        
-        
-        # Strategy management button
-        self.manage_strategies_btn = ttk.Button(control_frame, text="Manage Strategies", 
-                                               command=self.manage_strategies)
-        self.manage_strategies_btn.pack(side=tk.LEFT, padx=(0, 5))
-        
-        # Chart scrolling controls
-        self.scroll_left_btn = ttk.Button(control_frame, text="← Earlier", 
-                                        command=self.scroll_chart_left)
-        self.scroll_left_btn.pack(side=tk.LEFT, padx=(0, 5))
-        
-        self.scroll_right_btn = ttk.Button(control_frame, text="Later →", 
-                                         command=self.scroll_chart_right)
-        self.scroll_right_btn.pack(side=tk.LEFT, padx=(0, 5))
-        
-        # Status label
-        self.status_label = ttk.Label(control_frame, text="Status: Stopped")
-        self.status_label.pack(side=tk.LEFT, padx=(20, 0))
+        # Status label only
+        self.status_label = ttk.Label(control_frame, text="Status: Running", font=("Arial", 10))
+        self.status_label.pack(side=tk.LEFT, padx=(10, 0))
         
         # Grid frame for 2x2 layout
         grid_frame = ttk.Frame(main_frame)
@@ -1433,59 +1391,44 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
             
         except Exception as e:
             self.logger.error(f"Error clearing Grid 2: {e}")
-        
-    def start_chart(self):
-        """Start the chart"""
-        self.chart.start_chart()
-        self.status_label.config(text="Status: Running")
-        self.start_btn.config(state=tk.DISABLED)
-        self.stop_btn.config(state=tk.NORMAL)
-        
-    def stop_chart(self):
-        """Stop the chart"""
-        self.chart.stop_chart()
-        self.status_label.config(text="Status: Stopped")
-        self.start_btn.config(state=tk.NORMAL)
-        self.stop_btn.config(state=tk.DISABLED)
     
-    def fetch_historical(self):
-        """Placeholder for fetch historical data - will be overridden by main app"""
-        self.status_label.config(text="Status: Fetch Historical button clicked")
-    
-    def fetch_intraday(self):
-        """Placeholder for fetch intraday data - will be overridden by main app"""
-        self.status_label.config(text="Status: Fetch Intraday button clicked")
-    
-    def manage_strategies(self):
-        """Placeholder for manage strategies - will be overridden by main app"""
-        self.status_label.config(text="Status: Manage Strategies button clicked")
-    
-    def scroll_chart_left(self):
-        """Scroll chart to show earlier data"""
+    def display_error_message(self, error_message):
+        """Display error message in Grid 2"""
         try:
-            # Get the primary instrument (assuming Nifty 50)
-            primary_instrument = "NSE_INDEX|Nifty 50"
-            if self.chart.scroll_left(primary_instrument):
-                self.chart.force_chart_update()
-                self.logger.info("Scrolled chart left to show earlier data")
-            else:
-                self.logger.info("Already at the beginning of historical data")
+            # Clear any existing content
+            for widget in self.grid2_frame.winfo_children():
+                widget.destroy()
+            
+            # Create error display
+            error_frame = ttk.Frame(self.grid2_frame)
+            error_frame.pack(expand=True, fill=tk.BOTH, padx=20, pady=20)
+            
+            # Error icon (using text symbol)
+            error_icon = ttk.Label(error_frame, text="⚠️", font=("Arial", 48))
+            error_icon.pack(pady=(20, 10))
+            
+            # Error title
+            error_title = ttk.Label(error_frame, text="Strategy Creation Failed", 
+                                  font=("Arial", 16, "bold"), foreground="red")
+            error_title.pack(pady=(0, 10))
+            
+            # Error message
+            error_text = ttk.Label(error_frame, text=error_message, 
+                                 font=("Arial", 10), foreground="darkred",
+                                 wraplength=400, justify=tk.CENTER)
+            error_text.pack(pady=(0, 20))
+            
+            # Instructions
+            instructions = ttk.Label(error_frame, 
+                                   text="Please check your connection and try again.",
+                                   font=("Arial", 9), foreground="gray")
+            instructions.pack()
+            
+            self.logger.info(f"Displayed error message in Grid 2: {error_message}")
+            
         except Exception as e:
-            self.logger.error(f"Error scrolling chart left: {e}")
-    
-    def scroll_chart_right(self):
-        """Scroll chart to show later data"""
-        try:
-            # Get the primary instrument (assuming Nifty 50)
-            primary_instrument = "NSE_INDEX|Nifty 50"
-            if self.chart.scroll_right(primary_instrument):
-                self.chart.force_chart_update()
-                self.logger.info("Scrolled chart right to show later data")
-            else:
-                self.logger.info("Already at the end of historical data")
-        except Exception as e:
-            self.logger.error(f"Error scrolling chart right: {e}")
-    
+            self.logger.error(f"Error displaying error message: {e}")
+        
     def update_status(self, message):
         """Update the status label with scrolling information"""
         try:
@@ -1493,14 +1436,6 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
                 self.status_label.config(text=f"Status: {message}")
         except Exception as e:
             self.logger.error(f"Error updating status: {e}")
-    
-    def start_timer(self):
-        """Placeholder for start timer - will be overridden by main app"""
-        self.status_label.config(text="Status: Start Timer button clicked")
-    
-    def stop_timer(self):
-        """Placeholder for stop timer - will be overridden by main app"""
-        self.status_label.config(text="Status: Stop Timer button clicked")
     
     
     def on_closing(self):

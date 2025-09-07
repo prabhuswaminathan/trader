@@ -12,6 +12,7 @@ from trade_database import TradeDatabase
 from trade_models import Trade, TradeLeg, TradeStatus, OptionType, PositionType
 from upstox_option_chain import UpstoxOptionChain
 from utils import Utils
+from datawarehouse import datawarehouse
 import math
 
 logger = logging.getLogger("StrategyManager")
@@ -19,10 +20,18 @@ logger = logging.getLogger("StrategyManager")
 class StrategyManager:
     """Manages trading strategies and position tracking"""
     
-    def __init__(self, db_path: str = "market_trades.db"):
+    def __init__(self, agent=None, instruments=None, broker_type=None, db_path: str = "market_trades.db"):
         """Initialize the strategy manager"""
         self.db = TradeDatabase(db_path)
         self.option_chain = None
+        self.agent = agent
+        self.instruments = instruments
+        self.broker_type = broker_type
+    
+    def set_agent(self, agent):
+        """Set the agent after initialization"""
+        self.agent = agent
+        logger.info("Agent set for StrategyManager")
         
     def initialize_option_chain(self, access_token: str):
         """Initialize the option chain fetcher"""
@@ -46,6 +55,18 @@ class StrategyManager:
     def get_nearest_strike(self, spot_price: float, strike_interval: int = 50) -> int:
         """Get the nearest strike price to spot price"""
         return int(round(spot_price / strike_interval) * strike_interval)
+    
+    def get_primary_instrument(self) -> str:
+        """Get the primary instrument key from the instruments configuration"""
+        if self.instruments and self.broker_type and self.broker_type in self.instruments:
+            # Get the first instrument from the broker's instruments
+            broker_instruments = self.instruments[self.broker_type]
+            if broker_instruments:
+                return list(broker_instruments.keys())[0]
+        
+        # Fallback to NIFTY 50 if no instruments available
+        logger.warning("No instruments available, using fallback NIFTY 50")
+        return "NSE_INDEX|Nifty 50"
     
     def create_iron_condor_strategy(self, spot_price: float) -> Trade:
         """
@@ -83,7 +104,7 @@ class StrategyManager:
             
             # Find the specific options we need
             trade_legs = []
-            lot_size = 50  # NIFTY lot size
+            lot_size = 75  # NIFTY lot size
             
             # Create trade legs
             legs_config = [
@@ -156,107 +177,6 @@ class StrategyManager:
             logger.error(f"Error creating Iron Condor strategy: {e}")
             raise
     
-    def create_iron_condor_strategy_fallback(self, spot_price: float) -> Trade:
-        """
-        Create an Iron Condor strategy with fallback data (no API calls)
-        
-        Args:
-            spot_price: Current NIFTY spot price
-            
-        Returns:
-            Trade: Iron Condor trade object
-        """
-        try:
-            # Calculate strikes based on requirements
-            current_strike = self.get_nearest_strike(spot_price)
-            
-            # Short positions: 400 points away from current strike
-            short_call_strike = current_strike + 400
-            short_put_strike = current_strike - 400
-            
-            # Long positions: 200 points away from short positions
-            long_call_strike = short_call_strike + 200
-            long_put_strike = short_put_strike - 200
-            
-            # Get next expiry - use a future date
-            from datetime import date, timedelta
-            today = date.today()
-            # Get next Tuesday (NIFTY weekly expiry)
-            days_until_tuesday = (1 - today.weekday()) % 7
-            if days_until_tuesday == 0:
-                days_until_tuesday = 7
-            next_expiry = (today + timedelta(days=days_until_tuesday)).strftime("%Y-%m-%d")
-            
-            # Create trade legs with mock data
-            trade_legs = []
-            lot_size = 50  # NIFTY lot size
-            
-            # Create trade legs with mock option data
-            legs_config = [
-                {
-                    "strike": long_put_strike,
-                    "option_type": OptionType.PUT,
-                    "position_type": PositionType.LONG,
-                    "description": "Long Put (Protection)",
-                    "premium": 50.0
-                },
-                {
-                    "strike": short_put_strike,
-                    "option_type": OptionType.PUT,
-                    "position_type": PositionType.SHORT,
-                    "description": "Short Put (Income)",
-                    "premium": 100.0
-                },
-                {
-                    "strike": short_call_strike,
-                    "option_type": OptionType.CALL,
-                    "position_type": PositionType.SHORT,
-                    "description": "Short Call (Income)",
-                    "premium": 100.0
-                },
-                {
-                    "strike": long_call_strike,
-                    "option_type": OptionType.CALL,
-                    "position_type": PositionType.LONG,
-                    "description": "Long Call (Protection)",
-                    "premium": 50.0
-                }
-            ]
-            
-            for leg_config in legs_config:
-                trade_leg = TradeLeg(
-                    instrument=f"NSE_OPT|NIFTY|{next_expiry}|{leg_config['strike']}|{leg_config['option_type'].value}",
-                    instrument_name=f"NIFTY {leg_config['strike']} {leg_config['option_type'].value}",
-                    option_type=leg_config["option_type"],
-                    strike_price=leg_config["strike"],
-                    position_type=leg_config["position_type"],
-                    quantity=lot_size,
-                    entry_timestamp=datetime.now(),
-                    entry_price=leg_config["premium"]
-                )
-                trade_legs.append(trade_leg)
-            
-            # Create the trade
-            trade_id = f"IC_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-            trade = Trade(
-                trade_id=trade_id,
-                strategy_name="Iron Condor",
-                underlying_instrument="NIFTY",
-                status=TradeStatus.OPEN,
-                legs=trade_legs,
-                notes=f"Iron Condor: {long_put_strike}P/{short_put_strike}P/{short_call_strike}C/{long_call_strike}C",
-                tags=["Iron Condor", "Options Strategy", "Mock Data"]
-            )
-            
-            # Note: Trade is not saved to database until broker execution
-            # This is just a strategy calculation for display purposes
-            logger.info(f"Created Iron Condor strategy for display (fallback): {trade_id}")
-            
-            return trade
-            
-        except Exception as e:
-            logger.error(f"Error creating Iron Condor strategy fallback: {e}")
-            raise
     
     def _find_option_data(self, options: List[Dict], strike: int, option_type: OptionType) -> Optional[Dict]:
         """Find option data for specific strike and type"""
@@ -295,12 +215,13 @@ class StrategyManager:
             
             # Calculate payoffs
             payoffs = []
+            lot_size = 75  # NIFTY lot size
             for price in price_range:
                 total_payoff = 0
                 for leg in payoff_legs:
                     payoff = self._calculate_leg_payoff(price, leg)
                     total_payoff += payoff
-                payoffs.append(total_payoff)
+                payoffs.append(total_payoff * lot_size)
             
             payoffs = np.array(payoffs)
             
@@ -413,32 +334,56 @@ Breakevens: {payoff_data["breakevens"]}"""
             try:
                 # Initialize option chain
                 self.initialize_option_chain(access_token)
-                spot_price = self.get_current_spot_price()
-                logger.info(f"Current NIFTY spot price: {spot_price}")
+                
+                # Get spot price from agent
+                if self.agent and hasattr(self.agent, 'get_latest_price'):
+                    primary_instrument = self.get_primary_instrument()
+                    spot_price = self.agent.get_latest_price(primary_instrument)
+                    
+                    if spot_price is None:
+                        logger.warning(f"No spot price available from agent for {primary_instrument}")
+                        spot_price = 250.0  # Use fallback price
+                    else:
+                        logger.info(f"Retrieved spot price from agent: {spot_price}")
+                else:
+                    logger.warning("No agent available or agent doesn't have get_latest_price method")
+                    spot_price = 250.0  # Use fallback price
+                    
             except Exception as api_error:
-                logger.warning(f"API error, using fallback spot price: {api_error}")
+                logger.warning(f"Error getting spot price from agent, using fallback: {api_error}")
                 spot_price = 250.0  # Use fallback price
             
-            # Always create a new Iron Condor strategy for display
-            # No database checking since positions are not stored until broker execution
+            # Try to create Iron Condor strategy with real option data
             logger.info("Creating Iron Condor strategy for display...")
             
-            # Create Iron Condor strategy with fallback data if API fails
-            trade = self.create_iron_condor_strategy_fallback(spot_price)
-            
-            result = {
-                "spot_price": spot_price,
-                "open_positions": 0,  # No positions stored in DB
-                "action_taken": "iron_condor_created",
-                "trade_created": trade.trade_id,
-                "strategy_details": {
-                    "strikes": [leg.strike_price for leg in trade.legs],
-                    "expiry": trade.legs[0].entry_timestamp.strftime("%Y-%m-%d") if trade.legs else "N/A",
-                    "description": trade.notes
+            try:
+                trade = self.create_iron_condor_strategy(spot_price)
+                
+                result = {
+                    "spot_price": spot_price,
+                    "open_positions": 0,  # No positions stored in DB
+                    "action_taken": "iron_condor_created",
+                    "trade_created": trade.trade_id,
+                    "strategy_details": {
+                        "strikes": [leg.strike_price for leg in trade.legs],
+                        "expiry": trade.legs[0].entry_timestamp.strftime("%Y-%m-%d") if trade.legs else "N/A",
+                        "description": trade.notes
+                    }
                 }
-            }
-            
-            return result
+                
+                return result
+                
+            except Exception as strategy_error:
+                logger.error(f"Failed to create Iron Condor strategy: {strategy_error}")
+                return {
+                    "spot_price": spot_price,
+                    "open_positions": 0,
+                    "action_taken": "error",
+                    "error": f"Failed to create Iron Condor strategy: {strategy_error}",
+                    "strategy_details": {
+                        "error_message": f"Unable to fetch option chain data. Please check your connection and try again. Error: {strategy_error}"
+                    }
+                }
             
         except Exception as e:
             logger.error(f"Error in manage_positions: {e}")

@@ -24,7 +24,7 @@ def option_payoff(price, leg):
         raise ValueError("Position must be 'long' or 'short'")
 
 
-def portfolio_payoff(legs, price_range, lot_size=100):
+def portfolio_payoff(legs, price_range, lot_size=75):
     """Calculate total payoff for all legs across price range."""
     total_payoffs = []
     for price in price_range:
@@ -33,7 +33,7 @@ def portfolio_payoff(legs, price_range, lot_size=100):
     return np.array(total_payoffs)
 
 
-def analyze_strategy(legs, spot_price, lot_size=100):
+def analyze_strategy(legs, spot_price, lot_size=75):
     """Compute max profit, max loss, and breakeven points."""
     # Adaptive step size: 0.5% of spot price, at least 1
     step = max(1, int(spot_price * 0.005))
@@ -159,7 +159,7 @@ def plot_strategy(price_range, payoffs, breakevens, current_pl, legs, lot_size, 
 # Example: Iron Condor in Indian market
 if __name__ == "__main__":
     spot_price = 25000  # underlying price
-    lot_size = 15       # example lot size for BANKNIFTY
+    lot_size = 75       # NIFTY lot size
 
     legs = [
         {"type": "put", "position": "short", "strike": 24500, "premium": 200},

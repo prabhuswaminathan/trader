@@ -45,9 +45,6 @@ class MarketDataApp:
         self.market_start_time = dt_time(9, 15)  # 9:15 AM
         self.market_end_time = dt_time(15, 30)   # 3:30 PM
         
-        # Strategy management
-        self.strategy_manager = StrategyManager()
-        
         # Configuration - Only Nifty 50
         self.instruments = {
             "upstox": {
@@ -58,8 +55,14 @@ class MarketDataApp:
             }
         }
         
+        # Strategy management
+        self.strategy_manager = StrategyManager(agent=self.agent, instruments=self.instruments, broker_type=self.broker_type)
+        
         # Initialize components
         self._initialize_agent()
+        # Set the agent in strategy manager after it's initialized
+        if self.agent:
+            self.strategy_manager.set_agent(self.agent)
         self._initialize_chart()
         
         # Initialize timer tracking
@@ -152,6 +155,10 @@ class MarketDataApp:
             # Initialize new agent
             self._initialize_agent()
             
+            # Update strategy manager with new agent
+            if self.agent:
+                self.strategy_manager.set_agent(self.agent)
+            
             # Reinitialize chart with new instruments
             self._initialize_chart()
             
@@ -240,6 +247,33 @@ class MarketDataApp:
             return historical_data
         except Exception as e:
             logger.error(f"Error loading historical data: {e}")
+    
+    def fetch_and_display_historical_data(self):
+        """Fetch historical data from broker and display in chart"""
+        try:
+            # Get the primary instrument (Nifty 50)
+            primary_instrument = list(self.instruments[self.broker_type].keys())[0]
+            
+            logger.info(f"Fetching historical data for {primary_instrument}...")
+            
+            # Fetch historical data from broker
+            historical_data = self._load_historical_data()
+            
+            if historical_data and len(historical_data) > 0:
+                logger.info(f"Fetched {len(historical_data)} historical candles from broker")
+                
+                # Store historical data directly in chart
+                self.chart_visualizer._store_historical_data(primary_instrument, historical_data)
+                logger.info(f"Displayed {len(historical_data)} historical candles in chart")
+                
+                return True
+            else:
+                logger.warning("No historical data received from broker")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error fetching historical data: {e}")
+            return False
         
     def fetch_and_display_intraday_data(self):
         """Fetch intraday data from broker and display in chart"""
@@ -583,78 +617,12 @@ class MarketDataApp:
         try:
             self.chart_app = TkinterChartApp(self.chart_visualizer)
             
-            # Override the button commands to integrate live data streaming
-            def integrated_start():
-                logger.info("Starting chart and live data...")
-                # Start the chart animation
-                self.chart_app.chart.start_chart()
-                # Update GUI status
-                self.chart_app.status_label.config(text="Status: Running")
-                self.chart_app.start_btn.config(state=tk.DISABLED)
-                self.chart_app.stop_btn.config(state=tk.NORMAL)
-                # Start live data streaming
-                self.start_live_data()
-            
-            def integrated_stop():
-                logger.info("Stopping chart and live data...")
-                # Stop live data streaming
-                self.stop_live_data()
-            
-            def fetch_historical():
-                logger.info("Fetching historical data...")
-                self.chart_app.status_label.config(text="Status: Fetching Historical Data...")
-                if self.fetch_and_display_historical_data():
-                    self.chart_app.status_label.config(text="Status: Historical Data Loaded")
-                else:
-                    self.chart_app.status_label.config(text="Status: Failed to Load Historical Data")
-            
-            def fetch_intraday():
-                logger.info("Fetching intraday data...")
-                self.chart_app.status_label.config(text="Status: Fetching Intraday Data...")
-                if self.fetch_and_display_intraday_data():
-                    self.chart_app.status_label.config(text="Status: Intraday Data Loaded")
-                else:
-                    self.chart_app.status_label.config(text="Status: Failed to Load Intraday Data")
-            
-            def integrated_stop():
-                logger.info("Stopping chart and live data...")
-                # Stop live data streaming
-                self.stop_live_data()
-                # Stop the chart animation
-                self.chart_app.chart.stop_chart()
-                # Update GUI status
-                self.chart_app.status_label.config(text="Status: Stopped")
-                self.chart_app.start_btn.config(state=tk.NORMAL)
-                self.chart_app.stop_btn.config(state=tk.DISABLED)
-            
-            def start_timer():
-                logger.info("Starting trading timer...")
-                self.start_timer()
-                self.chart_app.status_label.config(text="Status: Timer Running (9:15 AM - 3:30 PM)")
-            
-            def stop_timer():
-                logger.info("Stopping trading timer...")
-                self.stop_timer()
-                self.chart_app.status_label.config(text="Status: Timer Stopped")
-            
-            
-            # Update button commands to use integrated functions
-            self.chart_app.start_btn.config(command=integrated_start)
-            self.chart_app.stop_btn.config(command=integrated_stop)
-            self.chart_app.fetch_historical_btn.config(command=fetch_historical)
-            self.chart_app.fetch_intraday_btn.config(command=fetch_intraday)
-            self.chart_app.start_timer_btn.config(command=start_timer)
-            self.chart_app.stop_timer_btn.config(command=stop_timer)
-            self.chart_app.manage_strategies_btn.config(command=self.manage_strategies)
-            
             logger.info("Starting chart application...")
             
             # Auto-start the chart and timer
             logger.info("Auto-starting chart and timer...")
             self.chart_app.chart.start_chart()
             self.chart_app.status_label.config(text="Status: Running - Chart initialized with intraday data")
-            self.chart_app.start_btn.config(state=tk.DISABLED)
-            self.chart_app.stop_btn.config(state=tk.NORMAL)
             
             if not self._is_trading_holiday:
                 # Start live data streaming
@@ -754,14 +722,23 @@ class MarketDataApp:
                             else:
                                 logger.info(f"Retrieved spot price from datawarehouse: {spot_price}")
                             
-                            trade = self.strategy_manager.create_iron_condor_strategy_fallback(spot_price)
-                            
-                            # Calculate payoff data
-                            payoff_data = self.strategy_manager.calculate_iron_condor_payoff(trade, spot_price)
-                            
-                            # Display in Grid 2
-                            self.chart_app.display_iron_condor_strategy(trade, spot_price, payoff_data)
-                            logger.info(f"Displayed Iron Condor strategy in Grid 2 with spot price: {spot_price}")
+                            try:
+                                trade = self.strategy_manager.create_iron_condor_strategy(spot_price)
+                                
+                                # Calculate payoff data
+                                payoff_data = self.strategy_manager.calculate_iron_condor_payoff(trade, spot_price)
+                                
+                                # Display in Grid 2
+                                self.chart_app.display_iron_condor_strategy(trade, spot_price, payoff_data)
+                                logger.info(f"Displayed Iron Condor strategy in Grid 2 with spot price: {spot_price}")
+                                
+                            except Exception as strategy_error:
+                                logger.error(f"Failed to create Iron Condor strategy: {strategy_error}")
+                                # Display error message in chart
+                                if self.chart_app and hasattr(self.chart_app, 'display_error_message'):
+                                    self.chart_app.display_error_message(f"Failed to create Iron Condor strategy: {strategy_error}")
+                                else:
+                                    logger.error("Cannot display error message - chart app not available or missing display_error_message method")
                     except Exception as e:
                         logger.error(f"Error displaying Iron Condor strategy: {e}")
                         

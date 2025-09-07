@@ -50,7 +50,7 @@ def create_mock_iron_condor(spot_price: float = 25000):
     print(f"  Long Call:  {long_call_strike} (Protection)")
     
     # Create mock option data
-    lot_size = 50
+    lot_size = 75
     next_expiry = (date.today() + timedelta(days=7)).strftime("%Y-%m-%d")
     
     # Mock option prices (these would come from the API in real usage)
