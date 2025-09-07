@@ -12,6 +12,7 @@ import threading
 import queue
 import logging
 from collections import deque
+from trade_models import PositionType, OptionType
 
 class LiveChartVisualizer:
     def __init__(self, title="Live Market Data", max_candles=100, candle_interval_minutes=5):
@@ -1334,6 +1335,9 @@ class TkinterChartApp:
                 ax.text(be, payoff_data["max_profit"] * 0.1, f'BE: {be}', 
                        rotation=90, ha='right', va='bottom', fontsize=8)
             
+            # Add horizontal line at zero profit/loss (without label)
+            ax.axhline(y=0, color='black', linestyle='-', alpha=0.8, linewidth=1)
+            
             # Formatting
             ax.set_xlabel('NIFTY Price at Expiry')
             ax.set_ylabel('Profit/Loss (₹)')
@@ -1341,18 +1345,34 @@ class TkinterChartApp:
             ax.grid(True, alpha=0.3)
             ax.legend(fontsize=8)
             
-            # Add strategy details
-            strategy_text = f"""Strategy Details:
+            # Add color filling for profit/loss zones (only in chart area)
+            # Use the actual data range instead of full chart limits
+            price_range = payoff_data["price_range"]
+            payoffs = payoff_data["payoffs"]
+            
+            # Fill area above zero with green (profit zone) - only where data exists
+            ax.fill_between(price_range, 0, payoffs, where=(payoffs >= 0), 
+                           color='green', alpha=0.1, label='Profit Zone')
+            
+            # Fill area below zero with red (loss zone) - only where data exists
+            ax.fill_between(price_range, payoffs, 0, where=(payoffs < 0), 
+                           color='red', alpha=0.1, label='Loss Zone')
+            
+            # Add strategy details text box (will be updated on hover)
+            initial_strategy_text = f"""Strategy Details:
 Strikes: {sorted(strikes)}
 Max Profit: ₹{payoff_data["max_profit"]:.0f}
 Max Loss: ₹{payoff_data["max_loss"]:.0f}
 Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
             
-            ax.text(0.02, 0.98, strategy_text, transform=ax.transAxes,
-                   verticalalignment='top', fontsize=8,
-                   bbox=dict(boxstyle='round', facecolor='wheat', alpha=0.8))
+            strategy_text_obj = ax.text(0.02, 0.98, initial_strategy_text, transform=ax.transAxes,
+                   verticalalignment='top', fontsize=9,
+                   bbox=dict(boxstyle='round,pad=0.3', facecolor='wheat', alpha=0.8))
             
             plt.tight_layout()
+            
+            # Add hover functionality to update existing strategy details
+            self._add_hover_update(fig, ax, trade, payoff_data, spot_price, strategy_text_obj)
             
             # Embed in grid 2
             canvas = FigureCanvasTkAgg(fig, self.grid2_frame)
@@ -1428,6 +1448,94 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
             
         except Exception as e:
             self.logger.error(f"Error displaying error message: {e}")
+    
+    def _add_hover_update(self, fig, ax, trade, payoff_data, spot_price, strategy_text_obj):
+        """Add hover functionality to update existing strategy details text"""
+        try:
+            # Store trade data and text object for updates
+            self._current_trade = trade
+            self._current_payoff_data = payoff_data
+            self._current_spot_price = spot_price
+            self._strategy_text_obj = strategy_text_obj
+            
+            # Store original text for when mouse leaves chart
+            self._original_strategy_text = strategy_text_obj.get_text()
+            
+            def hover(event):
+                """Handle mouse hover events"""
+                if event.inaxes != ax:
+                    # Mouse left chart area, restore original text
+                    self._strategy_text_obj.set_text(self._original_strategy_text)
+                    fig.canvas.draw_idle()
+                    return
+                
+                if event.xdata is None or event.ydata is None:
+                    # Invalid data, restore original text
+                    self._strategy_text_obj.set_text(self._original_strategy_text)
+                    fig.canvas.draw_idle()
+                    return
+                
+                # Get hover position
+                hover_price = event.xdata
+                hover_payoff = event.ydata
+                
+                # Find the closest point on the payoff curve
+                price_range = payoff_data["price_range"]
+                payoffs = payoff_data["payoffs"]
+                
+                # Find closest index
+                closest_idx = min(range(len(price_range)), 
+                                key=lambda i: abs(price_range[i] - hover_price))
+                
+                closest_price = price_range[closest_idx]
+                closest_payoff = payoffs[closest_idx]
+                
+                # Get strategy details for this price
+                strategy_details = self._get_strategy_details_at_price(closest_price, closest_payoff)
+                
+                # Update the existing text box
+                self._strategy_text_obj.set_text(strategy_details)
+                fig.canvas.draw_idle()
+            
+            # Connect hover event
+            fig.canvas.mpl_connect("motion_notify_event", hover)
+            
+            self.logger.info("Added hover update functionality to Iron Condor chart")
+            
+        except Exception as e:
+            self.logger.error(f"Error adding hover update: {e}")
+    
+    def _get_strategy_details_at_price(self, price, payoff):
+        """Get detailed strategy information at a specific price"""
+        try:
+            if not hasattr(self, '_current_trade') or not self._current_trade:
+                return "No strategy data available"
+            
+            trade = self._current_trade
+            payoff_data = self._current_payoff_data
+            
+            # Calculate percentage changes for breakevens based on current spot price
+            breakeven_texts = []
+            spot_price = getattr(self, '_current_spot_price', price)  # Use spot price if available, fallback to hovered price
+            for breakeven in payoff_data['breakevens']:
+                percentage_change = ((breakeven - spot_price) / spot_price) * 100
+                sign = "+" if percentage_change >= 0 else ""
+                breakeven_texts.append(f"{breakeven:.0f} ({sign}{percentage_change:.1f}%)")
+            
+            # Create detailed strategy text for the text box
+            strategy_text = f"""Strategy Details at NIFTY {price:.0f}:
+
+Total P&L: ₹{payoff:.0f}
+
+Max Profit: ₹{payoff_data['max_profit']:.0f}
+Max Loss: ₹{payoff_data['max_loss']:.0f}
+Breakevens: {', '.join(breakeven_texts)}"""
+            
+            return strategy_text
+            
+        except Exception as e:
+            self.logger.error(f"Error getting strategy details at price: {e}")
+            return f"Error loading details: {e}"
         
     def update_status(self, message):
         """Update the status label with scrolling information"""
