@@ -36,6 +36,10 @@ class LiveChartVisualizer:
         self.tooltip_annotation = None
         self.candlestick_patches = {}  # Store candlestick patches for hover detection
         
+        # Crosshair functionality
+        self.crosshair_vline = None  # Vertical crosshair line
+        self.crosshair_hline = None  # Horizontal crosshair line
+        
         # Chart setup - Single chart for price only
         try:
             self.fig, self.price_ax = plt.subplots(1, 1, figsize=(12, 8))
@@ -1091,7 +1095,7 @@ class LiveChartVisualizer:
             traceback.print_exc()
     
     def _on_hover(self, event):
-        """Handle mouse hover events for tooltips"""
+        """Handle mouse hover events for tooltips and crosshair"""
         try:
             if not self.tooltip_annotation or not self.price_ax:
                 return
@@ -1099,8 +1103,13 @@ class LiveChartVisualizer:
             # Check if mouse is over the chart
             if event.inaxes != self.price_ax:
                 self.tooltip_annotation.set_visible(False)
+                self._hide_crosshair()
                 self.fig.canvas.draw_idle()
                 return
+            
+            # Update crosshair position
+            self._update_crosshair(event.xdata, event.ydata)
+            self.logger.debug(f"Crosshair updated at x={event.xdata}, y={event.ydata}")
             
             # Find the closest candlestick
             closest_candle = self._find_closest_candlestick(event.xdata, event.ydata)
@@ -1255,9 +1264,37 @@ class LiveChartVisualizer:
             else:
                 time_str = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
             
-            # Calculate diff value (close - open)
-            diff_value = candle['close'] - candle['open']
-            diff_symbol = "📈" if diff_value >= 0 else "📉"
+            # Calculate diff value (previous candle close - current candle close)
+            # We need to find the previous candle in the same instrument
+            diff_value = 0
+            diff_symbol = "📊"
+            
+            try:
+                # Get the current candle's index in the patches list
+                current_instrument = candle_info['instrument']
+                patches_list = self.candlestick_patches.get(current_instrument, [])
+                
+                # Find current candle index
+                current_index = -1
+                for i, patch_data in enumerate(patches_list):
+                    if patch_data['candle_data'] == candle:
+                        current_index = i
+                        break
+                
+                # If we found the current candle and there's a previous one
+                if current_index > 0:
+                    previous_candle = patches_list[current_index - 1]['candle_data']
+                    diff_value = previous_candle['close'] - candle['close']
+                    diff_symbol = "📈" if diff_value >= 0 else "📉"
+                else:
+                    # No previous candle, show 0 diff
+                    diff_value = 0
+                    diff_symbol = "📊"
+                    
+            except Exception as e:
+                # Fallback to close - open if there's an error
+                diff_value = candle['close'] - candle['open']
+                diff_symbol = "📈" if diff_value >= 0 else "📉"
             
             # Create tooltip text with better formatting
             tooltip_text = f"🕐 {time_str}\n"
@@ -1271,6 +1308,10 @@ class LiveChartVisualizer:
             try:
                 self.tooltip_annotation.set_text(tooltip_text)
                 self.tooltip_annotation.xy = (event.xdata, event.ydata)
+                
+                # Calculate dynamic position to prevent cutoff
+                self._adjust_tooltip_position(event)
+                
                 self.tooltip_annotation.set_visible(True)
                 
                 # Force redraw
@@ -1281,6 +1322,127 @@ class LiveChartVisualizer:
             
         except Exception as e:
             self.logger.error(f"Error showing tooltip: {e}")
+    
+    def _adjust_tooltip_position(self, event):
+        """Adjust tooltip position to prevent cutoff at chart edges"""
+        try:
+            if not self.tooltip_annotation or not self.price_ax:
+                return
+            
+            # Get chart bounds
+            xlim = self.price_ax.get_xlim()
+            ylim = self.price_ax.get_ylim()
+            
+            # Get mouse position
+            mouse_x = event.xdata
+            mouse_y = event.ydata
+            
+            # Calculate chart dimensions
+            chart_width = xlim[1] - xlim[0]
+            chart_height = ylim[1] - ylim[0]
+            
+            # Calculate position as percentage of chart
+            x_percent = (mouse_x - xlim[0]) / chart_width
+            y_percent = (mouse_y - ylim[0]) / chart_height
+            
+            # Use larger offsets to ensure tooltip is fully visible
+            base_offset = 80  # Increased from 20 to 80 pixels
+            
+            # Horizontal positioning with more aggressive edge detection
+            if x_percent > 0.7:  # Right 30% of chart
+                offset_x = -base_offset  # Position to the left
+            elif x_percent < 0.3:  # Left 30% of chart
+                offset_x = base_offset   # Position to the right
+            else:  # Middle 40% of chart
+                offset_x = base_offset   # Default to right
+            
+            # Vertical positioning with more aggressive edge detection
+            if y_percent > 0.7:  # Top 30% of chart
+                offset_y = -base_offset  # Position below
+            elif y_percent < 0.3:  # Bottom 30% of chart
+                offset_y = base_offset   # Position above
+            else:  # Middle 40% of chart
+                offset_y = base_offset   # Default to above
+            
+            # Update tooltip position
+            self.tooltip_annotation.xy = (mouse_x, mouse_y)
+            self.tooltip_annotation.xytext = (offset_x, offset_y)
+            
+        except Exception as e:
+            self.logger.error(f"Error adjusting tooltip position: {e}")
+    
+    def _update_crosshair(self, x, y):
+        """Update crosshair position at cursor location"""
+        try:
+            if not self.price_ax or x is None or y is None:
+                return
+            
+            # Get chart bounds
+            xlim = self.price_ax.get_xlim()
+            ylim = self.price_ax.get_ylim()
+            
+            # Create or update vertical line using plot method for better visibility
+            if self.crosshair_vline is None or not hasattr(self.crosshair_vline, 'set_xdata'):
+                self.crosshair_vline, = self.price_ax.plot([x, x], [ylim[0], ylim[1]], color='darkgrey', linestyle='--', alpha=0.7, linewidth=1)
+                self.logger.info("Created new vertical crosshair line")
+            else:
+                self.crosshair_vline.set_xdata([x, x])
+                self.crosshair_vline.set_ydata([ylim[0], ylim[1]])
+                self.crosshair_vline.set_visible(True)
+                self.logger.info("Updated existing vertical crosshair line")
+            
+            # Create or update horizontal line using plot method for better visibility
+            if self.crosshair_hline is None or not hasattr(self.crosshair_hline, 'set_ydata'):
+                self.crosshair_hline, = self.price_ax.plot([xlim[0], xlim[1]], [y, y], color='darkgrey', linestyle='--', alpha=0.7, linewidth=1)
+                self.logger.info("Created new horizontal crosshair line")
+            else:
+                self.crosshair_hline.set_xdata([xlim[0], xlim[1]])
+                self.crosshair_hline.set_ydata([y, y])
+                self.crosshair_hline.set_visible(True)
+                self.logger.info("Updated existing horizontal crosshair line")
+            
+            # Force redraw to make crosshair visible
+            if hasattr(self, 'fig') and self.fig:
+                self.fig.canvas.draw_idle()
+            
+        except Exception as e:
+            self.logger.error(f"Error updating crosshair: {e}")
+    
+    def _hide_crosshair(self):
+        """Hide crosshair lines"""
+        try:
+            if self.crosshair_vline:
+                self.crosshair_vline.set_visible(False)
+            if self.crosshair_hline:
+                self.crosshair_hline.set_visible(False)
+        except Exception as e:
+            self.logger.error(f"Error hiding crosshair: {e}")
+    
+    def test_crosshair(self):
+        """Test method to create visible crosshair for debugging"""
+        try:
+            if not self.price_ax:
+                self.logger.error("No price axis available for crosshair test")
+                return
+            
+            # Get chart center
+            xlim = self.price_ax.get_xlim()
+            ylim = self.price_ax.get_ylim()
+            center_x = (xlim[0] + xlim[1]) / 2
+            center_y = (ylim[0] + ylim[1]) / 2
+            
+            # Create test crosshair
+            self.crosshair_vline, = self.price_ax.plot([center_x, center_x], [ylim[0], ylim[1]], color='darkgrey', linestyle='--', alpha=0.7, linewidth=1)
+            self.crosshair_hline, = self.price_ax.plot([xlim[0], xlim[1]], [center_y, center_y], color='darkgrey', linestyle='--', alpha=0.7, linewidth=1)
+            
+            # Force redraw
+            if hasattr(self, 'fig') and self.fig:
+                self.fig.canvas.draw_idle()
+            
+            self.logger.info("Test crosshair created at chart center")
+            
+        except Exception as e:
+            self.logger.error(f"Error creating test crosshair: {e}")
     
     def _get_last_update_time(self):
         """Get the last update time from the tracked update time"""
