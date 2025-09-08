@@ -40,6 +40,10 @@ class LiveChartVisualizer:
         self.crosshair_vline = None  # Vertical crosshair line
         self.crosshair_hline = None  # Horizontal crosshair line
         
+        # Hover labels functionality
+        self.hover_labels = {}  # Store hover labels for OHLC data
+        self.time_label = None  # Time label at bottom
+        
         # Chart setup - Single chart for price only
         try:
             self.fig, self.price_ax = plt.subplots(1, 1, figsize=(12, 8))
@@ -571,6 +575,10 @@ class LiveChartVisualizer:
             
             # Clear axes
             self.price_ax.clear()
+            
+            # Clear hover labels
+            self.hover_labels.clear()
+            self.time_label = None
             
             # Set up axes with combined title
             # Get last update time for title
@@ -1104,6 +1112,7 @@ class LiveChartVisualizer:
             if event.inaxes != self.price_ax:
                 self.tooltip_annotation.set_visible(False)
                 self._hide_crosshair()
+                self._hide_hover_labels()
                 self.fig.canvas.draw_idle()
                 return
             
@@ -1119,10 +1128,11 @@ class LiveChartVisualizer:
                 self._show_tooltip(event, closest_candle)
                 self.logger.debug(f"Hover tooltip shown for {closest_candle['instrument']}")
             else:
-                # Hide tooltip
+                # Hide tooltip and labels
                 if self.tooltip_annotation and hasattr(self.tooltip_annotation, 'set_visible'):
                     self.tooltip_annotation.set_visible(False)
-                    self.fig.canvas.draw_idle()
+                self._hide_hover_labels()
+                self.fig.canvas.draw_idle()
                 
         except Exception as e:
             self.logger.error(f"Error in hover event: {e}")
@@ -1249,9 +1259,9 @@ class LiveChartVisualizer:
             return None
     
     def _show_tooltip(self, event, candle_info):
-        """Show tooltip with OHLC data"""
+        """Show OHLC data as labels at top and time at bottom"""
         try:
-            if not self.tooltip_annotation or not hasattr(self.tooltip_annotation, 'set_text'):
+            if not self.price_ax:
                 return
             
             candle = candle_info['candle']
@@ -1265,7 +1275,6 @@ class LiveChartVisualizer:
                 time_str = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
             
             # Calculate diff value (previous candle close - current candle close)
-            # We need to find the previous candle in the same instrument
             diff_value = 0
             diff_symbol = "📊"
             
@@ -1284,7 +1293,7 @@ class LiveChartVisualizer:
                 # If we found the current candle and there's a previous one
                 if current_index > 0:
                     previous_candle = patches_list[current_index - 1]['candle_data']
-                    diff_value = previous_candle['close'] - candle['close']
+                    diff_value = candle['close'] - previous_candle['close']
                     diff_symbol = "📈" if diff_value >= 0 else "📉"
                 else:
                     # No previous candle, show 0 diff
@@ -1296,32 +1305,114 @@ class LiveChartVisualizer:
                 diff_value = candle['close'] - candle['open']
                 diff_symbol = "📈" if diff_value >= 0 else "📉"
             
-            # Create tooltip text with better formatting
-            tooltip_text = f"🕐 {time_str}\n"
-            tooltip_text += f"📈 Open: ₹{candle['open']:.2f}\n"
-            tooltip_text += f"⬆️ High: ₹{candle['high']:.2f}\n"
-            tooltip_text += f"⬇️ Low: ₹{candle['low']:.2f}\n"
-            tooltip_text += f"📉 Close: ₹{candle['close']:.2f}\n"
-            tooltip_text += f"{diff_symbol} Diff: ₹{diff_value:+.2f}"
+            # Create/update OHLC labels at the top
+            self._update_ohlc_labels(candle, diff_value, diff_symbol)
             
-            # Update tooltip with error handling
-            try:
-                self.tooltip_annotation.set_text(tooltip_text)
-                self.tooltip_annotation.xy = (event.xdata, event.ydata)
-                
-                # Calculate dynamic position to prevent cutoff
-                self._adjust_tooltip_position(event)
-                
-                self.tooltip_annotation.set_visible(True)
-                
-                # Force redraw
+            # Create/update time label at the bottom
+            self._update_time_label(time_str)
+            
+            # Force redraw
+            if hasattr(self, 'fig') and self.fig:
                 self.fig.canvas.draw_idle()
-            except AttributeError as e:
-                self.logger.warning(f"Tooltip annotation not properly initialized: {e}")
-                return
             
         except Exception as e:
             self.logger.error(f"Error showing tooltip: {e}")
+    
+    def _update_ohlc_labels(self, candle, diff_value, diff_symbol):
+        """Update OHLC labels at the top of the chart"""
+        try:
+            if not self.price_ax:
+                return
+            
+            # Get chart bounds
+            xlim = self.price_ax.get_xlim()
+            ylim = self.price_ax.get_ylim()
+            
+            # Clear existing OHLC labels
+            for label in self.hover_labels.values():
+                if hasattr(label, 'remove'):
+                    label.remove()
+            self.hover_labels.clear()
+            
+            # Create OHLC labels at the top
+            top_y = ylim[1] - (ylim[1] - ylim[0]) * 0.05  # 5% from top
+            
+            # Open label
+            self.hover_labels['open'] = self.price_ax.text(xlim[0] + (xlim[1] - xlim[0]) * 0.1, top_y, 
+                                                          f"O: ₹{candle['open']:.2f}", 
+                                                          fontsize=10, fontweight='bold', color='blue',
+                                                          bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+            
+            # High label
+            self.hover_labels['high'] = self.price_ax.text(xlim[0] + (xlim[1] - xlim[0]) * 0.3, top_y, 
+                                                          f"H: ₹{candle['high']:.2f}", 
+                                                          fontsize=10, fontweight='bold', color='green',
+                                                          bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+            
+            # Low label
+            self.hover_labels['low'] = self.price_ax.text(xlim[0] + (xlim[1] - xlim[0]) * 0.5, top_y, 
+                                                         f"L: ₹{candle['low']:.2f}", 
+                                                         fontsize=10, fontweight='bold', color='red',
+                                                         bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+            
+            # Close label
+            self.hover_labels['close'] = self.price_ax.text(xlim[0] + (xlim[1] - xlim[0]) * 0.7, top_y, 
+                                                           f"C: ₹{candle['close']:.2f}", 
+                                                           fontsize=10, fontweight='bold', color='purple',
+                                                           bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+            
+            # Diff label
+            diff_color = 'green' if diff_value >= 0 else 'red'
+            self.hover_labels['diff'] = self.price_ax.text(xlim[0] + (xlim[1] - xlim[0]) * 0.9, top_y, 
+                                                          f"{diff_symbol} {diff_value:+.2f}", 
+                                                          fontsize=10, fontweight='bold', color=diff_color,
+                                                          bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.8))
+            
+        except Exception as e:
+            self.logger.error(f"Error updating OHLC labels: {e}")
+    
+    def _update_time_label(self, time_str):
+        """Update time label at the bottom of the chart"""
+        try:
+            if not self.price_ax:
+                return
+            
+            # Get chart bounds
+            xlim = self.price_ax.get_xlim()
+            ylim = self.price_ax.get_ylim()
+            
+            # Remove existing time label
+            if self.time_label and hasattr(self.time_label, 'remove'):
+                self.time_label.remove()
+            
+            # Create time label at the bottom
+            bottom_y = ylim[0] + (ylim[1] - ylim[0]) * 0.05  # 5% from bottom
+            center_x = (xlim[0] + xlim[1]) / 2
+            
+            self.time_label = self.price_ax.text(center_x, bottom_y, time_str, 
+                                               fontsize=12, fontweight='bold', color='black',
+                                               ha='center', va='bottom',
+                                               bbox=dict(boxstyle="round,pad=0.5", facecolor="lightblue", alpha=0.9))
+            
+        except Exception as e:
+            self.logger.error(f"Error updating time label: {e}")
+    
+    def _hide_hover_labels(self):
+        """Hide all hover labels"""
+        try:
+            # Hide OHLC labels
+            for label in self.hover_labels.values():
+                if hasattr(label, 'remove'):
+                    label.remove()
+            self.hover_labels.clear()
+            
+            # Hide time label
+            if self.time_label and hasattr(self.time_label, 'remove'):
+                self.time_label.remove()
+            self.time_label = None
+            
+        except Exception as e:
+            self.logger.error(f"Error hiding hover labels: {e}")
     
     def _adjust_tooltip_position(self, event):
         """Adjust tooltip position to prevent cutoff at chart edges"""

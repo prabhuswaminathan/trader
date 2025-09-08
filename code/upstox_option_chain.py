@@ -19,6 +19,8 @@ from trade_utils import Utils
 
 logger = logging.getLogger("UpstoxOptionChain")
 
+WEEKLY_EXPIRY_INDEX = 1
+
 class UpstoxOptionChain:
     """
     Class to fetch option chain data from Upstox API for NIFTY options.
@@ -104,7 +106,7 @@ class UpstoxOptionChain:
         try:
             # If no expiry is provided, use next weekly expiry
             if expiry is None:
-                expiries = self.get_next_weekly_expiry()
+                expiries = self.get_next_weekly_expiry(WEEKLY_EXPIRY_INDEX)
                 if not expiries:
                     raise Exception("No expiry date available and unable to determine next weekly expiry")
                 expiry = expiries[0]  # Use the first (next) expiry
