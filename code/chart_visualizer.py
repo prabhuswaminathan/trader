@@ -806,6 +806,12 @@ class LiveChartVisualizer:
             # For 5-minute candles, use a fixed width of 4 minutes (0.8 * 5 minutes)
             candle_width = (5 * 60) * 0.8 / (24 * 3600)  # 5 minutes * 0.8 / seconds per day
             
+            # Store candlestick patches for hover detection
+            if instrument_key not in self.candlestick_patches:
+                self.candlestick_patches[instrument_key] = []
+            else:
+                self.candlestick_patches[instrument_key].clear()
+            
             for i, row in df.iterrows():
                 timestamp_mpl = row['timestamp_mpl']
                 timestamp = row['timestamp']
@@ -830,26 +836,45 @@ class LiveChartVisualizer:
                 body_bottom = min(open_price, close_price)
                 
                 # Upper wick (if high > body top)
+                upper_wick = None
                 if high_price > body_top:
-                    self.price_ax.plot([timestamp_mpl, timestamp_mpl], [body_top, high_price], 
+                    upper_wick = self.price_ax.plot([timestamp_mpl, timestamp_mpl], [body_top, high_price], 
                                      color='black', linewidth=1.5, alpha=0.8)
                 
                 # Lower wick (if low < body bottom)
+                lower_wick = None
                 if low_price < body_bottom:
-                    self.price_ax.plot([timestamp_mpl, timestamp_mpl], [low_price, body_bottom], 
+                    lower_wick = self.price_ax.plot([timestamp_mpl, timestamp_mpl], [low_price, body_bottom], 
                                      color='black', linewidth=1.5, alpha=0.8)
                 
                 # Draw the open-close rectangle (body)
+                body_patch = None
                 if close_price >= open_price:
                     # Bullish candle (close >= open)
-                    self.price_ax.bar(timestamp_mpl, close_price - open_price, 
+                    body_patch = self.price_ax.bar(timestamp_mpl, close_price - open_price, 
                                     bottom=open_price, width=candle_width,
                                     color=candle_color, edgecolor=edge_color, linewidth=1.5, alpha=0.8)
                 else:
                     # Bearish candle (close < open)
-                    self.price_ax.bar(timestamp_mpl, open_price - close_price, 
+                    body_patch = self.price_ax.bar(timestamp_mpl, open_price - close_price, 
                                     bottom=close_price, width=candle_width,
                                     color=candle_color, edgecolor=edge_color, linewidth=1.5, alpha=0.8)
+                
+                # Store patches for hover detection
+                candle_patches = {
+                    'body': body_patch[0] if body_patch else None,
+                    'upper_wick': upper_wick[0] if upper_wick else None,
+                    'lower_wick': lower_wick[0] if lower_wick else None,
+                    'candle_data': {
+                        'timestamp': timestamp,
+                        'open': open_price,
+                        'high': high_price,
+                        'low': low_price,
+                        'close': close_price,
+                        'volume': row.get('volume', 0)
+                    }
+                }
+                self.candlestick_patches[instrument_key].append(candle_patches)
             
             # No line chart overlay - pure candlestick chart
             
@@ -1041,13 +1066,18 @@ class LiveChartVisualizer:
             try:
                 self.tooltip_annotation = self.price_ax.annotate('', xy=(0, 0), xytext=(20, 20),
                                                                textcoords="offset points",
-                                                               bbox=dict(boxstyle="round,pad=0.3", 
-                                                                       facecolor="lightblue", 
-                                                                       edgecolor="black",
-                                                                       alpha=0.8),
+                                                               bbox=dict(boxstyle="round,pad=0.5", 
+                                                                       facecolor="white", 
+                                                                       edgecolor="navy",
+                                                                       linewidth=2,
+                                                                       alpha=0.95),
                                                                arrowprops=dict(arrowstyle="->",
-                                                                             connectionstyle="arc3,rad=0"),
-                                                               fontsize=10,
+                                                                             connectionstyle="arc3,rad=0",
+                                                                             color="navy",
+                                                                             linewidth=2),
+                                                               fontsize=11,
+                                                               fontweight='bold',
+                                                               color="navy",
                                                                visible=False)
             except Exception as e:
                 self.logger.warning(f"Could not initialize tooltip annotation: {e}")
@@ -1129,22 +1159,23 @@ class LiveChartVisualizer:
             traceback.print_exc()
     
     def _find_closest_candlestick(self, x, y):
-        """Find the closest candlestick to the mouse position"""
+        """Find the closest candlestick to the mouse position using stored patches"""
         try:
-            if not self.candle_data or x is None or y is None:
+            if not self.candlestick_patches or x is None or y is None:
                 return None
             
             closest_candle = None
             min_distance = float('inf')
             
             # Check all instruments
-            for instrument_key, candle_list in self.candle_data.items():
-                if not candle_list:
+            for instrument_key, patches_list in self.candlestick_patches.items():
+                if not patches_list:
                     continue
                 
-                # Check each candle
-                for candle in candle_list:
-                    candle_time = candle['timestamp']
+                # Check each candlestick patch
+                for patch_data in patches_list:
+                    candle_data = patch_data['candle_data']
+                    candle_time = candle_data['timestamp']
                     
                     # Convert timestamp to matplotlib time format
                     if isinstance(candle_time, datetime):
@@ -1152,21 +1183,39 @@ class LiveChartVisualizer:
                     else:
                         candle_x = datetime.fromtimestamp(candle_time)
                     
-                    # Calculate distance (considering both time and price)
-                    # Convert both to timestamps to avoid timezone issues
-                    candle_timestamp = candle_x.timestamp()
-                    if hasattr(x, '__float__'):
-                        mouse_timestamp = x
-                    else:
-                        mouse_timestamp = x.timestamp() if hasattr(x, 'timestamp') else x
+                    # Convert to matplotlib date format for comparison
+                    import matplotlib.dates as mdates
+                    candle_x_mpl = mdates.date2num(candle_x)
                     
-                    time_diff = abs(candle_timestamp - mouse_timestamp)
-                    price_diff = abs(y - candle['close'])
+                    # Calculate candlestick bounds
+                    # For 5-minute candles, width is approximately 0.0035 days (5 minutes)
+                    candle_width = 0.0035  # 5 minutes in days
+                    candle_left = candle_x_mpl - candle_width/2
+                    candle_right = candle_x_mpl + candle_width/2
                     
-                    # Very lenient distance calculation - focus on time proximity only
-                    # Use time difference as primary factor, ignore price for click detection
+                    # Check if mouse is within candlestick time bounds
+                    if candle_left <= x <= candle_right:
+                        # Check if mouse is within candlestick price bounds
+                        high_price = candle_data['high']
+                        low_price = candle_data['low']
+                        
+                        if low_price <= y <= high_price:
+                            # Mouse is within both time and price bounds of this candlestick
+                            closest_candle = {
+                                'instrument': instrument_key,
+                                'candle': candle_data,
+                                'x': candle_x,
+                                'y': candle_data['close']
+                            }
+                            return closest_candle  # Return immediately for exact match
+                    
+                    # If not within bounds, calculate distance for fallback
+                    time_diff = abs(x - candle_x_mpl)
+                    price_diff = abs(y - candle_data['close'])
+                    
+                    # Use time difference as primary factor
                     time_weight = 1.0
-                    price_weight = 0.01  # Very low weight for price
+                    price_weight = 0.001  # Very low weight for price
                     
                     distance = time_diff * time_weight + price_diff * price_weight
                     
@@ -1174,14 +1223,14 @@ class LiveChartVisualizer:
                         min_distance = distance
                         closest_candle = {
                             'instrument': instrument_key,
-                            'candle': candle,
+                            'candle': candle_data,
                             'x': candle_x,
-                            'y': candle['close']
+                            'y': candle_data['close']
                         }
             
-            # Very lenient threshold for better click detection
-            # Allow clicks within 8 hours (28800 seconds) - very generous
-            if min_distance < 28800:  # Within 8 hours
+            # Only return closest candle if it's very close (within 0.01 days = 14.4 minutes)
+            # This ensures tooltip only shows when cursor is very close to a candlestick
+            if min_distance < 0.01:  # Within 14.4 minutes
                 return closest_candle
             
             return None
@@ -1206,14 +1255,17 @@ class LiveChartVisualizer:
             else:
                 time_str = datetime.fromtimestamp(timestamp).strftime("%Y-%m-%d %H:%M:%S")
             
-            # Create tooltip text
-            tooltip_text = f"{instrument}\n"
-            tooltip_text += f"Time: {time_str}\n"
-            tooltip_text += f"Open: ₹{candle['open']:.2f}\n"
-            tooltip_text += f"High: ₹{candle['high']:.2f}\n"
-            tooltip_text += f"Low: ₹{candle['low']:.2f}\n"
-            tooltip_text += f"Close: ₹{candle['close']:.2f}\n"
-            tooltip_text += f"Volume: {candle['volume']:,.0f}"
+            # Calculate diff value (close - open)
+            diff_value = candle['close'] - candle['open']
+            diff_symbol = "📈" if diff_value >= 0 else "📉"
+            
+            # Create tooltip text with better formatting
+            tooltip_text = f"🕐 {time_str}\n"
+            tooltip_text += f"📈 Open: ₹{candle['open']:.2f}\n"
+            tooltip_text += f"⬆️ High: ₹{candle['high']:.2f}\n"
+            tooltip_text += f"⬇️ Low: ₹{candle['low']:.2f}\n"
+            tooltip_text += f"📉 Close: ₹{candle['close']:.2f}\n"
+            tooltip_text += f"{diff_symbol} Diff: ₹{diff_value:+.2f}"
             
             # Update tooltip with error handling
             try:
@@ -1583,6 +1635,9 @@ class TkinterChartApp:
         self.canvas = FigureCanvasTkAgg(self.chart.fig, self.grid1_frame)
         self.canvas.draw()
         self.canvas.get_tk_widget().grid(row=0, column=0, sticky="nsew")
+        
+        # Set up tooltips for candlestick hover
+        self.chart._setup_tooltips()
         
         # Grid 2 (Top-Right): Strategy Display
         self.grid2_frame = ttk.LabelFrame(grid_frame, text="Strategy Display", padding=5)
