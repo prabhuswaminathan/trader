@@ -11,7 +11,7 @@ from typing import List, Optional, Dict, Any, Tuple
 from trade_database import TradeDatabase
 from trade_models import Trade, TradeLeg, TradeStatus, OptionType, PositionType
 from upstox_option_chain import UpstoxOptionChain
-from utils import Utils
+from trade_utils import Utils
 from datawarehouse import datawarehouse
 import math
 
@@ -174,6 +174,7 @@ class StrategyManager:
             return trade
             
         except Exception as e:
+            #Display this error in the UI
             logger.error(f"Error creating Iron Condor strategy: {e}")
             raise
     
@@ -329,39 +330,56 @@ Breakevens: {payoff_data["breakevens"]}"""
     def manage_positions(self, access_token: str) -> Dict[str, Any]:
         """Main method to manage positions and create strategies"""
         try:
-            # Try to get real spot price, fallback to default if API fails
-            spot_price = 250.0  # Default fallback
+            # First, check if there are any open trades
+            open_trades = self.get_open_positions()
+            logger.info(f"Found {len(open_trades)} open trades")
+            
+            # Get spot price from agent
+            spot_price = 25000.0  # Default fallback
             try:
-                # Initialize option chain
-                self.initialize_option_chain(access_token)
-                
-                # Get spot price from agent
                 if self.agent and hasattr(self.agent, 'get_latest_price'):
                     primary_instrument = self.get_primary_instrument()
                     spot_price = self.agent.get_latest_price(primary_instrument)
                     
                     if spot_price is None:
                         logger.warning(f"No spot price available from agent for {primary_instrument}")
-                        spot_price = 250.0  # Use fallback price
+                        spot_price = 25000.0  # Use fallback price
                     else:
                         logger.info(f"Retrieved spot price from agent: {spot_price}")
                 else:
                     logger.warning("No agent available or agent doesn't have get_latest_price method")
-                    spot_price = 250.0  # Use fallback price
+                    spot_price = 25000.0  # Use fallback price
                     
             except Exception as api_error:
                 logger.warning(f"Error getting spot price from agent, using fallback: {api_error}")
-                spot_price = 250.0  # Use fallback price
+                spot_price = 25000.0  # Use fallback price
             
-            # Try to create Iron Condor strategy with real option data
-            logger.info("Creating Iron Condor strategy for display...")
+            # If there are open trades, return action to display open trades payoff
+            if open_trades:
+                logger.info(f"Found {len(open_trades)} open trades, returning action to display open trades payoff")
+                return {
+                    "spot_price": spot_price,
+                    "open_positions": len(open_trades),
+                    "action_taken": "display_open_trades",
+                    "open_trades": open_trades,
+                    "strategy_details": {
+                        "message": f"Displaying payoff for {len(open_trades)} open trades",
+                        "trade_count": len(open_trades)
+                    }
+                }
+            
+            # If no open trades, create Iron Condor strategy
+            logger.info("No open trades found, creating Iron Condor strategy for display...")
             
             try:
+                # Initialize option chain
+                self.initialize_option_chain(access_token)
+                
                 trade = self.create_iron_condor_strategy(spot_price)
                 
                 result = {
                     "spot_price": spot_price,
-                    "open_positions": 0,  # No positions stored in DB
+                    "open_positions": 0,
                     "action_taken": "iron_condor_created",
                     "trade_created": trade.trade_id,
                     "strategy_details": {

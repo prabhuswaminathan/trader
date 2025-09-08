@@ -15,7 +15,7 @@ from datetime import datetime
 import os
 import json
 from dotenv import load_dotenv
-from utils import Utils
+from trade_utils import Utils
 
 logger = logging.getLogger("UpstoxOptionChain")
 

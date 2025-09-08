@@ -190,27 +190,21 @@ class KiteAgent(BrokerAgent):
         self.is_connected = False
         self.logger.info("Disconnected from live data feed")
 
-    def get_ohlc_intraday_data(self, instrument: str, interval: str = "1minute", 
-                              start_time: Optional[datetime] = None, 
-                              end_time: Optional[datetime] = None) -> List[Dict]:
+    def get_ohlc_intraday_data(self, instrument: str, interval: str = "1minute") -> List[Dict]:
         """
         Get intraday OHLC data from Kite
         
         Args:
             instrument (str): Instrument identifier (e.g., "NSE:NIFTY 50")
             interval (str): Data interval ("1minute", "3minute", "5minute", "15minute", "30minute", "60minute")
-            start_time (datetime, optional): Start time for data
-            end_time (datetime, optional): End time for data
             
         Returns:
             List[Dict]: List of OHLC data dictionaries
         """
         try:
-            # Set default time range if not provided
-            if end_time is None:
-                end_time = datetime.now()
-            if start_time is None:
-                start_time = end_time - timedelta(days=1)  # Default to last 24 hours
+            # Set default time range for intraday data
+            end_time = datetime.now()
+            start_time = end_time - timedelta(days=1)  # Default to last 24 hours
             
             # Convert interval to Kite format
             interval_map = {

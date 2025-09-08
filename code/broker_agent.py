@@ -98,17 +98,13 @@ class BrokerAgent(ABC):
 
     # OHLC Data methods
     @abstractmethod
-    def get_ohlc_intraday_data(self, instrument: str, interval: str = "1minute", 
-                              start_time: Optional[datetime] = None, 
-                              end_time: Optional[datetime] = None) -> List[Dict]:
+    def get_ohlc_intraday_data(self, instrument: str, interval: str = "1minute") -> List[Dict]:
         """
         Get intraday OHLC data from broker
         
         Args:
             instrument (str): Instrument identifier
             interval (str): Data interval (e.g., "1minute", "5minute")
-            start_time (datetime, optional): Start time for data
-            end_time (datetime, optional): End time for data
             
         Returns:
             List[Dict]: List of OHLC data dictionaries

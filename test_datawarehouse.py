@@ -134,7 +134,7 @@ def test_broker_agent_integration():
             def disconnect_live_data(self):
                 pass
             
-            def get_ohlc_intraday_data(self, instrument, interval="1minute", start_time=None, end_time=None):
+            def get_ohlc_intraday_data(self, instrument, interval="1minute"):
                 # Return mock data
                 base_time = datetime.now().replace(minute=0, second=0, microsecond=0)
                 return [{

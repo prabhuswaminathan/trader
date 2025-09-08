@@ -92,34 +92,29 @@ class UpstoxAgent(BrokerAgent):
         except ApiException as e:
             print("Exception when calling OrderApi->get_order_book: %s\n" % e)        
 
-    def get_ohlc_intraday_data(self, instrument: str, interval: str = "1minute", 
-                              start_time: Optional[datetime] = None, 
-                              end_time: Optional[datetime] = None) -> List[Dict]:
+    def get_ohlc_intraday_data(self, instrument: str, interval: str = "5") -> List[Dict]:
         """
         Get intraday OHLC data from Upstox (current trading day only)
         
         Args:
             instrument (str): Instrument identifier (e.g., "NSE_INDEX|Nifty 50")
             interval (str): Data interval ("1minute", "5minute", "15minute", "30minute", "60minute")
-            start_time (datetime, optional): Not used for intraday (Upstox limitation)
-            end_time (datetime, optional): Not used for intraday (Upstox limitation)
             
         Returns:
             List[Dict]: List of OHLC data dictionaries for current trading day
             
         Note:
             Upstox intraday API only provides data for the current trading day.
-            start_time and end_time parameters are ignored.
         """
         try:
-            api_instance = upstox_client.HistoryApi(upstox_client.ApiClient(configuration=self.configuration))
+            api_instance = upstox_client.HistoryV3Api(upstox_client.ApiClient(configuration=self.configuration))
             
             # Get intraday candle data (current trading day only)
             # Note: Upstox intraday API doesn't accept date parameters
             api_response = api_instance.get_intra_day_candle_data(
                 instrument_key=instrument,
-                interval=interval,
-                api_version=api_version
+                unit="minutes",
+                interval=interval
             )
             
             # Parse response and convert to standard format
@@ -173,69 +168,54 @@ class UpstoxAgent(BrokerAgent):
         Returns:
             List[Dict]: List of OHLC data dictionaries with specified interval
         """
-        try:
-            api_instance = upstox_client.HistoryV3Api(upstox_client.ApiClient(configuration=self.configuration))
+        api_instance = upstox_client.HistoryV3Api(upstox_client.ApiClient(configuration=self.configuration))
+        
+        # Calculate date range
+        end_time = datetime.now()
+        start_time = end_time - timedelta(days=days)
+        
+        # Format dates for API
+        to_date = end_time.strftime("%Y-%m-%d")
+        from_date = start_time.strftime("%Y-%m-%d")
+        
+        logger.info(f"Fetching {interval} {unit} historical data from {from_date} to {to_date}")
+
+        return self.get_ohlc_historical_data(instrument, unit, interval, from_date, to_date)
+
+    def get_ohlc_historical_data(self, instrument: str, unit: str = "minutes", interval: int = 5, from_date: str = None, end_date: str = None) -> List[Dict]:
+        
+        # Get historical candle data with specified interval
+        # Note: Upstox API might not support all intervals for historical data
+        # For intervals other than "day", we'll use daily data and simulate the requested interval
+        api_instance = upstox_client.HistoryV3Api(upstox_client.ApiClient(configuration=self.configuration))
+
+        api_response = api_instance.get_historical_candle_data1(
+            instrument_key=instrument,
+            unit=unit,
+            interval=interval,
+            to_date=end_date,
+            from_date=from_date
+        )
+        
+        # Parse response and convert to standard format
+        daily_data = []
+        if hasattr(api_response, 'data') and api_response.data:
+            logger.info(f"API returned {len(api_response.data.candles)} candles")
+            for candle in api_response.data.candles:
+                daily_data.append({
+                    'timestamp': datetime.fromisoformat(candle[0].replace('Z', '+00:00')),
+                    'open': float(candle[1]),
+                    'high': float(candle[2]),
+                    'low': float(candle[3]),
+                    'close': float(candle[4]),
+                    'volume': float(candle[5]) if len(candle) > 5 else 0
+                })
+        
+        # Sort data by timestamp (most recent first)
+        daily_data.sort(key=lambda x: x['timestamp'], reverse=True)
+        
+        return daily_data
             
-            # Calculate date range
-            end_time = datetime.now()
-            start_time = end_time - timedelta(days=days)
-            
-            # Format dates for API
-            to_date = end_time.strftime("%Y-%m-%d")
-            from_date = start_time.strftime("%Y-%m-%d")
-            
-            logger.info(f"Fetching {interval} {unit} historical data from {from_date} to {to_date}")
-            
-            # Get historical candle data with specified interval
-            # Note: Upstox API might not support all intervals for historical data
-            # For intervals other than "day", we'll use daily data and simulate the requested interval
-            api_response = api_instance.get_historical_candle_data1(
-                instrument_key=instrument,
-                unit=unit,
-                interval=interval,
-                to_date=to_date,
-                from_date=from_date
-            )
-            
-            # Parse response and convert to standard format
-            daily_data = []
-            if hasattr(api_response, 'data') and api_response.data:
-                logger.info(f"API returned {len(api_response.data.candles)} candles")
-                for candle in api_response.data.candles:
-                    daily_data.append({
-                        'timestamp': datetime.fromisoformat(candle[0].replace('Z', '+00:00')),
-                        'open': float(candle[1]),
-                        'high': float(candle[2]),
-                        'low': float(candle[3]),
-                        'close': float(candle[4]),
-                        'volume': float(candle[5]) if len(candle) > 5 else 0
-                    })
-            
-            # Sort data by timestamp (most recent first)
-            daily_data.sort(key=lambda x: x['timestamp'], reverse=True)
-            
-            return daily_data
-            
-        except ApiException as e:
-            # Check for UDAPI1088 error code (trading holiday)
-            if hasattr(e, 'body') and e.body:
-                try:
-                    error_data = json.loads(e.body)
-                    if (isinstance(error_data, dict) and 
-                        error_data.get('status') == 'error' and 
-                        error_data.get('errors') and 
-                        len(error_data['errors']) > 0 and 
-                        error_data['errors'][0].get('errorCode') == 'UDAPI1088'):
-                        logger.warning("Trading holiday detected (UDAPI1088) - market is closed")
-                        raise TradingHolidayException("Trading holiday detected - market is closed")
-                except (json.JSONDecodeError, KeyError, IndexError):
-                    pass
-            
-            logger.error(f"Exception when calling HistoryApi->get_historical_candle_data: {e}")
-            return []
-        except Exception as e:
-            logger.error(f"Error getting {interval} historical data for {instrument}: {e}")
-            return []
     
     def _get_interval_minutes(self, interval) -> int:
         """
@@ -282,6 +262,59 @@ class UpstoxAgent(BrokerAgent):
 
     def place_order(self):
         self.broker.place_order()
+    
+    def place_order_v3(self, order_details):
+        """
+        Place order using Upstox API PlaceOrderV3
+        
+        Args:
+            order_details (dict): Order details including:
+                - quantity (int): Order quantity
+                - product (str): Product type (e.g., "MIS", "CNC", "NRML")
+                - validity (str): Order validity (e.g., "DAY", "IOC")
+                - price (float): Order price
+                - instrument_token (str): Instrument token
+                - order_type (str): Order type (e.g., "MARKET", "LIMIT")
+                - transaction_type (str): Transaction type (e.g., "BUY", "SELL")
+                - disclosed_quantity (int, optional): Disclosed quantity
+                - trigger_price (float, optional): Trigger price
+                - is_amo (bool, optional): After market order
+                - tag (str, optional): Order tag
+        
+        Returns:
+            dict: Order response from Upstox API
+        """
+        try:
+            from upstox_client import OrderApiV3
+            upstox_available = True
+
+            api_instance = upstox_client.OrderApiV3()
+            # Create order request
+            order_request = upstox_client.PlaceOrderV3Request(
+                quantity=order_details['quantity'],
+                product=order_details['product'],
+                validity=order_details['validity'],
+                price=order_details['price'],
+                tag=order_details.get('tag', ''),
+                instrument_token=order_details['instrument_token'],
+                order_type=order_details['order_type'],
+                transaction_type=order_details['transaction_type'],
+                disclosed_quantity=order_details.get('disclosed_quantity', 0),
+                trigger_price=order_details.get('trigger_price', 0),
+                is_amo=order_details.get('is_amo', False),
+                slice=order_details.get('slice', False)
+            )
+            
+            logger.debug(f"Order request: {order_request}")
+            # Place the order
+            response = None
+            response = api_instance.place_order(order_request)
+            logger.info(f"Order placed successfully: {response}")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error placing order: {e}")
+            raise e
 
     def fetch_instruments(self):
         self.broker.fetch_instruments()

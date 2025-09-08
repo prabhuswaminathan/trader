@@ -62,7 +62,7 @@ class Utils:
                 
                 # Check if the target date falls on a market holiday
                 # If it does, move to the previous working day
-                while target_date in Utils.MARKET_HOLIDAYS or target_date.weekday() >= 5:  # Skip weekends and holidays
+                while target_date in Utils.MARKET_HOLIDAYS or Utils.isWeekend(datetime.combine(target_date, datetime.min.time())):  # Skip weekends and holidays
                     target_date -= timedelta(days=1)
                 
                 # Format as YYYY-MM-DD
@@ -109,7 +109,7 @@ class Utils:
             
             # Check if the target date falls on a market holiday
             # If it does, move to the previous working day
-            while target_date in Utils.MARKET_HOLIDAYS or target_date.weekday() >= 5:  # Skip weekends and holidays
+            while target_date in Utils.MARKET_HOLIDAYS or Utils.isWeekend(datetime.combine(target_date, datetime.min.time())):  # Skip weekends and holidays
                 target_date -= timedelta(days=1)
             
             # Format as YYYY-MM-DD
@@ -150,7 +150,7 @@ class Utils:
             monthly_expiry = last_date - timedelta(days=days_back)
             
             # Check if it's a holiday and adjust if needed
-            while monthly_expiry in Utils.MARKET_HOLIDAYS or monthly_expiry.weekday() >= 5:
+            while monthly_expiry in Utils.MARKET_HOLIDAYS or Utils.isWeekend(datetime.combine(monthly_expiry, datetime.min.time())):
                 monthly_expiry -= timedelta(days=1)
             
             return monthly_expiry.strftime("%Y-%m-%d")
@@ -196,6 +196,52 @@ class Utils:
             raise
     
     @staticmethod
+    def isWeekend(dt: Optional[datetime] = None) -> bool:
+        """
+        Check if the given date/time is a weekend (Saturday or Sunday).
+        
+        Args:
+            dt (datetime, optional): DateTime to check. If None, uses current time.
+        
+        Returns:
+            bool: True if it's a weekend, False otherwise
+        """
+        if dt is None:
+            dt = datetime.now()
+        
+        # Check if it's a weekend (Saturday = 5, Sunday = 6)
+        return dt.weekday() >= 5
+    
+    @staticmethod
+    def getPreviousFriday(dt: Optional[datetime] = None) -> datetime:
+        """
+        Get the previous Friday from the given date/time.
+        
+        Args:
+            dt (datetime, optional): DateTime to check from. If None, uses current time.
+        
+        Returns:
+            datetime: Previous Friday datetime
+        """
+        if dt is None:
+            dt = datetime.now()
+        
+        # Get the date part
+        current_date = dt.date()
+        
+        # Calculate days to go back to previous Friday
+        # Friday = 4, so we need to go back (current_weekday - 4) % 7 days
+        # If today is Friday, we want the previous Friday (7 days ago)
+        days_back = (current_date.weekday() - 4) % 7
+        if days_back == 0:  # If today is Friday
+            days_back = 7  # Get previous Friday
+        
+        previous_friday = current_date - timedelta(days=days_back)
+        
+        # Convert back to datetime with the same time as input
+        return datetime.combine(previous_friday, dt.time())
+    
+    @staticmethod
     def is_market_open(dt: Optional[datetime] = None) -> bool:
         """
         Check if the market is open at the given time.
@@ -210,7 +256,7 @@ class Utils:
             dt = datetime.now()
         
         # Check if it's a weekend
-        if dt.weekday() >= 5:  # Saturday = 5, Sunday = 6
+        if Utils.isWeekend(dt):
             return False
         
         # Check if it's a holiday
@@ -245,7 +291,7 @@ class Utils:
             next_open += timedelta(days=1)
         
         # Skip weekends and holidays
-        while next_open.weekday() >= 5 or next_open.date() in Utils.MARKET_HOLIDAYS:
+        while Utils.isWeekend(next_open) or next_open.date() in Utils.MARKET_HOLIDAYS:
             next_open += timedelta(days=1)
             next_open = next_open.replace(hour=9, minute=15, second=0, microsecond=0)
         
@@ -389,6 +435,39 @@ if __name__ == "__main__":
     
     tuesday_series = Utils.get_expiry_series("tuesday", 4)
     print(f"Tuesday series: {tuesday_series}")
+    
+    # Test weekend check
+    print("\n=== Weekend Check Tests ===")
+    print(f"Is today a weekend: {Utils.isWeekend()}")
+    
+    # Test specific dates
+    from datetime import datetime
+    saturday = datetime(2024, 1, 6)  # Saturday
+    sunday = datetime(2024, 1, 7)    # Sunday
+    monday = datetime(2024, 1, 8)    # Monday
+    
+    print(f"Is Saturday a weekend: {Utils.isWeekend(saturday)}")
+    print(f"Is Sunday a weekend: {Utils.isWeekend(sunday)}")
+    print(f"Is Monday a weekend: {Utils.isWeekend(monday)}")
+    
+    # Test previous Friday
+    print("\n=== Previous Friday Tests ===")
+    print(f"Previous Friday from today: {Utils.getPreviousFriday().strftime('%Y-%m-%d %A')}")
+    
+    # Test specific dates
+    test_dates = [
+        datetime(2024, 1, 8),   # Monday
+        datetime(2024, 1, 9),   # Tuesday
+        datetime(2024, 1, 10),  # Wednesday
+        datetime(2024, 1, 11),  # Thursday
+        datetime(2024, 1, 12),  # Friday
+        datetime(2024, 1, 13),  # Saturday
+        datetime(2024, 1, 14),  # Sunday
+    ]
+    
+    for test_date in test_dates:
+        prev_friday = Utils.getPreviousFriday(test_date)
+        print(f"Previous Friday from {test_date.strftime('%Y-%m-%d %A')}: {prev_friday.strftime('%Y-%m-%d %A')}")
     
     # Test market hours
     print("\n=== Market Hours Tests ===")

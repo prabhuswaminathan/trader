@@ -29,6 +29,7 @@ class LiveChartVisualizer:
         self.historical_data = {}  # Store full historical data for scrolling
         self.current_view_start = 0  # Start index for current view
         self.view_size = 75  # Number of candles to display (one trading day)
+        self.has_stored_data = {}  # Track if we have stored intraday data for each instrument
         
         # Tooltip functionality
         self.tooltip = None
@@ -38,12 +39,15 @@ class LiveChartVisualizer:
         # Chart setup - Single chart for price only
         try:
             self.fig, self.price_ax = plt.subplots(1, 1, figsize=(12, 8))
-            self.fig.suptitle(self.title, fontsize=16)
             
-            # Main price chart
-            self.price_ax.set_title("Nifty 50 - Intraday Candlestick Chart (5-Minute)")
-            self.price_ax.set_ylabel("Price (₹)")
-            self.price_ax.set_xlabel("Time")
+            # Combined title with all information
+            combined_title = f"{self.title} - Nifty 50 Intraday Candlestick Chart (5-Minute) - Price (₹) vs Time"
+            self.fig.suptitle(combined_title, fontsize=10, fontweight='bold')
+            
+            # Remove individual titles to prevent overlap
+            self.price_ax.set_title("")  # Empty title
+            self.price_ax.set_ylabel("")  # Empty ylabel
+            self.price_ax.set_xlabel("")  # Empty xlabel
             self.price_ax.grid(True, alpha=0.3)
             
             # No volume chart needed
@@ -71,6 +75,14 @@ class LiveChartVisualizer:
         self.update_thread = None
         self.stop_event = threading.Event()
         
+        # Live data callback for payoff chart updates
+        self.live_data_callback = None
+        
+        # Grid 2 update timer for live data
+        self.last_grid2_update = 0  # Timestamp of last Grid 2 update
+        self.grid2_update_interval = 5.0  # Update Grid 2 every 5 seconds
+        self.pending_live_data = {}  # Store pending live data updates
+        
     def add_instrument(self, instrument_key, instrument_name=None):
         """Add a new instrument to track"""
         if instrument_name is None:
@@ -82,10 +94,47 @@ class LiveChartVisualizer:
         # Don't initialize with empty data - let the first tick create the first candle
         
         self.logger.info(f"Added instrument: {instrument_name} ({instrument_key})")
+    
+    def set_live_data_callback(self, callback):
+        """Set callback for live data updates"""
+        self.live_data_callback = callback
+    
+    def _call_live_data_callback_with_interval(self, instrument_key, price, volume):
+        """Call live data callback with 5-second interval control"""
+        try:
+            import time
+            current_time = time.time()
+            
+            # Store the latest live data
+            self.pending_live_data[instrument_key] = {
+                'price': price,
+                'volume': volume,
+                'timestamp': current_time
+            }
+            
+            # Check if it's time to call the callback (every 5 seconds)
+            if current_time - self.last_grid2_update >= self.grid2_update_interval:
+                # Call the callback with the latest data
+                if self.live_data_callback:
+                    self.live_data_callback(instrument_key, price, volume)
+                self.last_grid2_update = current_time
+                self.logger.debug(f"Grid 2 updated with live data: {price}")
+            else:
+                # Log that we're storing data for later update
+                remaining_time = self.grid2_update_interval - (current_time - self.last_grid2_update)
+                self.logger.debug(f"Storing live data for {instrument_key}: {price} (Grid 2 update in {remaining_time:.1f}s)")
+                
+        except Exception as e:
+            self.logger.error(f"Error calling live data callback with interval: {e}")
         
     def update_data(self, instrument_key, tick_data):
         """Update data for a specific instrument"""
         try:
+            # Skip live data processing if we have stored intraday data
+            if self.has_stored_data.get(instrument_key, False):
+                self.logger.debug(f"Skipping live data update for {instrument_key} - using stored intraday data")
+                return
+            
             # Parse tick data based on broker type
             if isinstance(tick_data, list):
                 # Kite format
@@ -101,6 +150,11 @@ class LiveChartVisualizer:
     
     def _process_kite_tick(self, instrument_key, tick):
         """Process Kite tick data"""
+        # Skip live data processing if we have stored intraday data
+        if self.has_stored_data.get(instrument_key, False):
+            self.logger.debug(f"Skipping Kite tick processing for {instrument_key} - using stored intraday data")
+            return
+            
         current_price = tick.get('last_price', 0)
         volume = tick.get('volume', 0)
         timestamp = datetime.now()
@@ -116,10 +170,19 @@ class LiveChartVisualizer:
             'volume': volume,
             'tick': tick
         })
+        
+        # Call live data callback for payoff chart updates (with 5-second interval)
+        if self.live_data_callback:
+            self._call_live_data_callback_with_interval(instrument_key, current_price, volume)
     
     def _process_upstox_tick(self, instrument_key, tick_data):
         """Process Upstox tick data"""
         try:
+            # Skip live data processing if we have stored intraday data
+            if self.has_stored_data.get(instrument_key, False):
+                self.logger.debug(f"Skipping Upstox tick processing for {instrument_key} - using stored intraday data")
+                return
+            
             # Check if this is complete OHLC data (from data warehouse)
             if isinstance(tick_data, dict) and all(key in tick_data for key in ['open', 'high', 'low', 'close']):
                 # This is complete OHLC data - add it directly as a candle
@@ -210,6 +273,10 @@ class LiveChartVisualizer:
             if self.is_running:
                 self._draw_charts()
             
+            # Call live data callback for payoff chart updates (with 5-second interval)
+            if self.live_data_callback:
+                self._call_live_data_callback_with_interval(instrument_key, current_price, volume)
+            
         except Exception as e:
             self.logger.error(f"Error processing Upstox tick: {e}")
             # Still add a basic entry to keep the chart alive
@@ -253,6 +320,9 @@ class LiveChartVisualizer:
             # Update last update time
             candle_time = candle['timestamp']
             if isinstance(candle_time, datetime):
+                # Ensure timestamp is timezone-naive
+                if candle_time.tzinfo is not None:
+                    candle_time = candle_time.replace(tzinfo=None)
                 self.last_update_time = candle_time
             else:
                 self.last_update_time = datetime.fromtimestamp(candle_time)
@@ -335,46 +405,63 @@ class LiveChartVisualizer:
             return []
     
     def _store_historical_data(self, instrument_key, historical_data):
-        """Store historical data in the chart for display"""
+        """Historical data storage disabled - only intraday data is displayed in grid 1"""
+        self.logger.info(f"Historical data storage disabled - {len(historical_data)} historical candles not displayed in chart")
+        # Historical data is stored in datawarehouse only, not displayed in chart
+
+    def _store_intraday_data(self, instrument_key, intraday_data):
+        """Store intraday data in the chart for display"""
         try:
-            if not historical_data:
-                self.logger.warning(f"No historical data to store for {instrument_key}")
+            if not intraday_data:
+                self.logger.warning(f"No intraday data to store for {instrument_key}")
                 return
             
-            # Clear existing data for this instrument
-            if instrument_key in self.candle_data:
-                self.candle_data[instrument_key].clear()
-            else:
+            # Initialize intraday data storage if not exists
+            if instrument_key not in self.candle_data:
                 self.candle_data[instrument_key] = deque(maxlen=self.max_candles)
             
-            # Store historical data
-            for candle in historical_data:
+            # Clear existing data before storing new data to prevent duplicates
+            self.candle_data[instrument_key].clear()
+            
+            # Store intraday data
+            for candle in intraday_data:
                 self.candle_data[instrument_key].append(candle)
             
+            # Mark that we have stored data for this instrument
+            self.has_stored_data[instrument_key] = True
+            
             # Update current price to the latest close price
-            if historical_data:
-                latest_candle = historical_data[-1]
+            if intraday_data:
+                latest_candle = intraday_data[-1]
                 self.current_prices[instrument_key] = latest_candle.get('close', 0)
                 
                 # Update last update time
                 latest_timestamp = latest_candle.get('timestamp')
                 if isinstance(latest_timestamp, datetime):
+                    # Ensure timestamp is timezone-naive
+                    if latest_timestamp.tzinfo is not None:
+                        latest_timestamp = latest_timestamp.replace(tzinfo=None)
                     self.last_update_time = latest_timestamp
                 else:
                     self.last_update_time = datetime.fromtimestamp(latest_timestamp)
             
-            self.logger.info(f"Stored {len(historical_data)} historical candles for {instrument_key}")
+            self.logger.info(f"Stored {len(intraday_data)} intraday candles for {instrument_key}")
             
             # Force chart update to display the data
             if self.is_running:
                 self.force_chart_update()
             
         except Exception as e:
-            self.logger.error(f"Error storing historical data for {instrument_key}: {e}")
+            self.logger.error(f"Error storing intraday data for {instrument_key}: {e}")
     
     def _update_candle_data(self, instrument_key, price, volume, timestamp):
         """Update candle data with new tick"""
         if instrument_key not in self.candle_data:
+            return
+        
+        # Skip live data processing if we have stored intraday data
+        if self.has_stored_data.get(instrument_key, False):
+            self.logger.debug(f"Skipping live data processing for {instrument_key} - using stored intraday data")
             return
             
         candle_data = self.candle_data[instrument_key]
@@ -382,6 +469,10 @@ class LiveChartVisualizer:
         # Convert timestamp to datetime if it's a float
         if isinstance(timestamp, (int, float)):
             timestamp = datetime.fromtimestamp(timestamp)
+        
+        # Ensure timestamp is timezone-naive to avoid timezone issues
+        if timestamp.tzinfo is not None:
+            timestamp = timestamp.replace(tzinfo=None)
         
         if not candle_data:
             # First data point
@@ -409,6 +500,9 @@ class LiveChartVisualizer:
                 self.logger.warning("Last candle has no timestamp, creating new candle")
                 time_diff = float('inf')  # Force new candle creation
             else:
+                # Ensure both timestamps are timezone-naive for comparison
+                if last_timestamp.tzinfo is not None:
+                    last_timestamp = last_timestamp.replace(tzinfo=None)
                 time_diff = (current_time - last_timestamp).total_seconds()
             
             if time_diff >= (self.candle_interval_minutes * 60):
@@ -423,7 +517,9 @@ class LiveChartVisualizer:
                 })
                 self.logger.debug(f"Created new candle for {instrument_key}: O={price}, H={price}, L={price}, C={price}, V={volume}")
                 
-                # Chart will be updated by animation loop
+                # Immediately update the chart if it's running
+                if self.is_running:
+                    self._draw_charts()
             else:
                 # Update current candle
                 last_candle['high'] = max(last_candle['high'], price)
@@ -432,12 +528,15 @@ class LiveChartVisualizer:
                 last_candle['volume'] += volume
                 self.logger.debug(f"Updated candle for {instrument_key}: O={last_candle['open']}, H={last_candle['high']}, L={last_candle['low']}, C={last_candle['close']}, V={last_candle['volume']}")
                 
-                # Chart will be updated by animation loop
+                # Immediately update the chart if it's running
+                if self.is_running:
+                    self._draw_charts()
     
     def _animate(self, frame):
         """Animation function to update charts"""
         try:
             # Process queued data
+            has_new_data = False
             while not self.data_queue.empty():
                 try:
                     data = self.data_queue.get_nowait()
@@ -447,11 +546,13 @@ class LiveChartVisualizer:
                         data['volume'],
                         data['timestamp']
                     )
+                    has_new_data = True
                 except queue.Empty:
                     break
             
-            # Update charts
-            self._draw_charts()
+            # Only update charts if there's new data
+            if has_new_data:
+                self._draw_charts()
             
         except Exception as e:
             self.logger.error(f"Error in animation: {e}")
@@ -467,14 +568,19 @@ class LiveChartVisualizer:
             # Clear axes
             self.price_ax.clear()
             
-            # Set up axes
-            self.price_ax.set_title("Nifty 50 - Intraday Candlestick Chart (5-Minute)")
-            self.price_ax.set_ylabel("Price (₹)")
-            
-            # Get last update time for x-axis label
+            # Set up axes with combined title
+            # Get last update time for title
             last_update_time = self._get_last_update_time()
-            xlabel_text = f"Time ({last_update_time})" if last_update_time else "Time"
-            self.price_ax.set_xlabel(xlabel_text)
+            time_info = f" (Last Update: {last_update_time})" if last_update_time else ""
+            
+            # Update the combined title with current information
+            combined_title = f"{self.title} - Nifty 50 Intraday Candlestick Chart (5-Minute) - Price (₹) vs Time{time_info}"
+            self.fig.suptitle(combined_title, fontsize=10, fontweight='bold')
+            
+            # Remove individual titles to prevent overlap
+            self.price_ax.set_title("")  # Empty title
+            self.price_ax.set_ylabel("")  # Empty ylabel
+            self.price_ax.set_xlabel("")  # Empty xlabel
             self.price_ax.grid(True, alpha=0.3)
             
             # Check if we have any data to display
@@ -504,12 +610,16 @@ class LiveChartVisualizer:
             else:
                 # Update Y-axis scale based on price range
                 self._update_y_axis_scale()
-                
-                # Format x-axis with time display
-                self._format_x_axis_time()
             
-            # Adjust layout
-            plt.tight_layout()
+            # Format x-axis with time display
+            self._format_x_axis_time()
+            
+            # Adjust layout with proper spacing for rotated labels and combined title
+            plt.tight_layout(pad=3.0)
+            
+            # Ensure subplot spacing accommodates rotated labels and combined title
+            if hasattr(self, 'fig') and self.fig:
+                self.fig.subplots_adjust(bottom=0.15, left=0.1, right=0.95, top=0.88)
             
             # Only redraw if chart is running to prevent flickering
             if self.is_running and hasattr(self, 'fig') and self.fig:
@@ -533,10 +643,17 @@ class LiveChartVisualizer:
                 for candle in candle_data:
                     timestamp = candle['timestamp']
                     if isinstance(timestamp, datetime):
+                        # Ensure timestamp is timezone-naive
+                        if timestamp.tzinfo is not None:
+                            timestamp = timestamp.replace(tzinfo=None)
                         all_timestamps.append(timestamp)
                     else:
                         # Convert timestamp to datetime if needed
-                        all_timestamps.append(datetime.fromtimestamp(timestamp))
+                        dt = datetime.fromtimestamp(timestamp)
+                        # Ensure it's timezone-naive
+                        if dt.tzinfo is not None:
+                            dt = dt.replace(tzinfo=None)
+                        all_timestamps.append(dt)
             
             if not all_timestamps:
                 return
@@ -554,14 +671,12 @@ class LiveChartVisualizer:
             min_time_mpl = mdates.date2num(min_time)
             max_time_mpl = mdates.date2num(max_time)
             
-            # Custom formatter to convert UTC to IST for display
-            def ist_formatter(x, pos):
-                from datetime import timedelta
+            # Custom formatter for time display
+            def time_formatter(x, pos):
                 # Convert matplotlib date number to datetime
                 dt = mdates.num2date(x)
-                # Add 5 hours 30 minutes to convert UTC to IST
-                ist_dt = dt + timedelta(hours=5, minutes=30)
-                return ist_dt.strftime('%H:%M')
+                # Display time as-is (assuming data is already in local timezone)
+                return dt.strftime('%H:%M')
             
             # Set up time formatting based on data range
             if time_range.total_seconds() <= 3600:  # Less than 1 hour
@@ -577,8 +692,8 @@ class LiveChartVisualizer:
                 hour_locator = mdates.HourLocator(interval=1)
                 self.price_ax.xaxis.set_major_locator(hour_locator)
             
-            # Apply the IST formatter
-            self.price_ax.xaxis.set_major_formatter(plt.FuncFormatter(ist_formatter))
+            # Apply the time formatter
+            self.price_ax.xaxis.set_major_formatter(plt.FuncFormatter(time_formatter))
             
             # Rotate x-axis labels for better readability
             self.price_ax.tick_params(axis='x', rotation=45)
@@ -587,6 +702,12 @@ class LiveChartVisualizer:
             # Add some padding (5% on each side)
             padding = time_range * 0.05
             self.price_ax.set_xlim(min_time - padding, max_time + padding)
+            
+            # Adjust layout to prevent label cutoff
+            self.price_ax.tick_params(axis='x', labelsize=8, pad=10)
+            
+            # Ensure there's enough space for rotated labels
+            self.price_ax.margins(x=0.02, y=0.05)
             
             # Force matplotlib to update the axis
             if time_range.total_seconds() <= 3600:
@@ -600,10 +721,12 @@ class LiveChartVisualizer:
             self.logger.error(f"Error formatting X-axis time: {e}")
             # Fallback to simple time display
             try:
-                self.price_ax.tick_params(axis='x', rotation=45)
+                self.price_ax.tick_params(axis='x', rotation=45, labelsize=8, pad=10)
                 # Set a simple time formatter
                 import matplotlib.dates as mdates
                 self.price_ax.xaxis.set_major_formatter(mdates.DateFormatter('%H:%M'))
+                # Ensure proper spacing for rotated labels
+                self.price_ax.margins(x=0.02, y=0.05)
             except Exception as fallback_error:
                 self.logger.error(f"Error in fallback time formatting: {fallback_error}")
     
@@ -661,19 +784,27 @@ class LiveChartVisualizer:
             if df.empty:
                 return
             
+            # Ensure all timestamps are timezone-naive before sorting
+            def normalize_timestamp(ts):
+                if isinstance(ts, datetime):
+                    if ts.tzinfo is not None:
+                        return ts.replace(tzinfo=None)
+                    return ts
+                else:
+                    return datetime.fromtimestamp(ts)
+            
+            df['timestamp'] = df['timestamp'].apply(normalize_timestamp)
+            
             # Sort by timestamp to ensure proper order
             df = df.sort_values('timestamp')
             
             # Convert timestamps to matplotlib date format for proper plotting
             import matplotlib.dates as mdates
-            df['timestamp_mpl'] = df['timestamp'].apply(lambda x: mdates.date2num(x) if isinstance(x, datetime) else mdates.date2num(datetime.fromtimestamp(x)))
+            df['timestamp_mpl'] = df['timestamp'].apply(lambda x: mdates.date2num(x))
             
-            # Calculate candlestick width based on data frequency
-            if len(df) > 1:
-                time_diff = (df['timestamp'].iloc[1] - df['timestamp'].iloc[0]).total_seconds()
-                candle_width = time_diff * 0.8 / (24 * 3600)  # Convert to days for matplotlib
-            else:
-                candle_width = (self.candle_interval_minutes * 60) * 0.8 / (24 * 3600)  # Convert to days
+            # Calculate candlestick width based on 5-minute interval
+            # For 5-minute candles, use a fixed width of 4 minutes (0.8 * 5 minutes)
+            candle_width = (5 * 60) * 0.8 / (24 * 3600)  # 5 minutes * 0.8 / seconds per day
             
             for i, row in df.iterrows():
                 timestamp_mpl = row['timestamp_mpl']
@@ -726,10 +857,21 @@ class LiveChartVisualizer:
             self.logger.error(f"Error plotting candlesticks: {e}")
             # Fallback to simple line chart
             try:
+                # Normalize timestamps before sorting
+                def normalize_timestamp(ts):
+                    if isinstance(ts, datetime):
+                        if ts.tzinfo is not None:
+                            return ts.replace(tzinfo=None)
+                        return ts
+                    else:
+                        return datetime.fromtimestamp(ts)
+                
+                df['timestamp'] = df['timestamp'].apply(normalize_timestamp)
                 df_sorted = df.sort_values('timestamp')
+                
                 # Convert timestamps for matplotlib
                 import matplotlib.dates as mdates
-                timestamps_mpl = df_sorted['timestamp'].apply(lambda x: mdates.date2num(x) if isinstance(x, datetime) else mdates.date2num(datetime.fromtimestamp(x)))
+                timestamps_mpl = df_sorted['timestamp'].apply(lambda x: mdates.date2num(x))
                 self.price_ax.plot(timestamps_mpl, df_sorted['close'], 
                                  color='blue', linewidth=2, label=instrument_key, alpha=0.7)
             except Exception as fallback_error:
@@ -779,64 +921,28 @@ class LiveChartVisualizer:
         return []
     
     def set_historical_data(self, instrument_key, historical_data):
-        """Set full historical data for scrolling functionality"""
-        self.historical_data[instrument_key] = historical_data
-        self.current_view_start = max(0, len(historical_data) - self.view_size)
-        self.logger.info(f"Stored {len(historical_data)} historical candles for {instrument_key}")
+        """Historical data scrolling disabled - only intraday data is displayed in grid 1"""
+        self.logger.info(f"Historical data scrolling disabled - {len(historical_data)} historical candles not stored for scrolling")
+        # Historical data scrolling is disabled
     
     def set_status_callback(self, callback):
         """Set callback function for status updates"""
         self.status_callback = callback
     
     def scroll_left(self, instrument_key):
-        """Scroll to show earlier data"""
-        if instrument_key not in self.historical_data:
-            return False
-        
-        historical_data = self.historical_data[instrument_key]
-        if self.current_view_start > 0:
-            self.current_view_start = max(0, self.current_view_start - self.view_size)
-            self._update_display_data(instrument_key)
-            return True
+        """Historical data scrolling disabled - only intraday data is displayed in grid 1"""
+        self.logger.debug("Historical data scrolling disabled")
         return False
     
     def scroll_right(self, instrument_key):
-        """Scroll to show later data"""
-        if instrument_key not in self.historical_data:
-            return False
-        
-        historical_data = self.historical_data[instrument_key]
-        max_start = max(0, len(historical_data) - self.view_size)
-        if self.current_view_start < max_start:
-            self.current_view_start = min(max_start, self.current_view_start + self.view_size)
-            self._update_display_data(instrument_key)
-            return True
+        """Historical data scrolling disabled - only intraday data is displayed in grid 1"""
+        self.logger.debug("Historical data scrolling disabled")
         return False
     
     def _update_display_data(self, instrument_key):
-        """Update the displayed data based on current view position"""
-        if instrument_key not in self.historical_data:
-            return
-        
-        historical_data = self.historical_data[instrument_key]
-        end_index = min(self.current_view_start + self.view_size, len(historical_data))
-        view_data = historical_data[self.current_view_start:end_index]
-        
-        # Clear and update display data
-        if instrument_key in self.candle_data:
-            self.candle_data[instrument_key].clear()
-        
-        for candle in view_data:
-            if instrument_key not in self.candle_data:
-                self.candle_data[instrument_key] = deque(maxlen=self.max_candles)
-            self.candle_data[instrument_key].append(candle)
-            self.current_prices[instrument_key] = candle['close']
-        
-        self.logger.info(f"Updated view: showing candles {self.current_view_start}-{end_index} of {len(historical_data)}")
-        
-        # Update status if we have a status callback
-        if hasattr(self, 'status_callback'):
-            self.status_callback(f"View: {self.current_view_start}-{end_index} of {len(historical_data)} candles")
+        """Historical data display disabled - only intraday data is displayed in grid 1"""
+        self.logger.debug("Historical data display disabled")
+        # Historical data display is disabled
     
     def process_data_queue(self):
         """Manually process the data queue (useful for testing)"""
@@ -879,8 +985,22 @@ class LiveChartVisualizer:
             
             # Check if animation is still active
             if hasattr(self, 'ani') and self.ani and hasattr(self.ani, 'event_source'):
-                if not self.ani.event_source.is_alive():
-                    self.logger.warning("Chart animation stopped, restarting...")
+                # Check if the animation event source is still running
+                # TimerTk doesn't have is_alive(), so we check if it's still active differently
+                try:
+                    if hasattr(self.ani.event_source, 'is_alive'):
+                        if not self.ani.event_source.is_alive():
+                            self.logger.warning("Chart animation stopped, restarting...")
+                            self.start_chart()
+                            return True
+                    else:
+                        # For TimerTk, check if the animation is still running by checking the interval
+                        if not self.ani.event_source.interval:
+                            self.logger.warning("Chart animation stopped, restarting...")
+                            self.start_chart()
+                            return True
+                except Exception as e:
+                    self.logger.warning(f"Error checking animation status: {e}, restarting...")
                     self.start_chart()
                     return True
             
@@ -917,17 +1037,21 @@ class LiveChartVisualizer:
             self.fig.canvas.mpl_connect('motion_notify_event', self._on_hover)
             self.fig.canvas.mpl_connect('button_press_event', self._on_click)
             
-            # Initialize tooltip annotation
-            self.tooltip_annotation = self.price_ax.annotate('', xy=(0, 0), xytext=(20, 20),
-                                                           textcoords="offset points",
-                                                           bbox=dict(boxstyle="round,pad=0.3", 
-                                                                   facecolor="lightblue", 
-                                                                   edgecolor="black",
-                                                                   alpha=0.8),
-                                                           arrowprops=dict(arrowstyle="->",
-                                                                         connectionstyle="arc3,rad=0"),
-                                                           fontsize=10,
-                                                           visible=False)
+            # Initialize tooltip annotation with error handling
+            try:
+                self.tooltip_annotation = self.price_ax.annotate('', xy=(0, 0), xytext=(20, 20),
+                                                               textcoords="offset points",
+                                                               bbox=dict(boxstyle="round,pad=0.3", 
+                                                                       facecolor="lightblue", 
+                                                                       edgecolor="black",
+                                                                       alpha=0.8),
+                                                               arrowprops=dict(arrowstyle="->",
+                                                                             connectionstyle="arc3,rad=0"),
+                                                               fontsize=10,
+                                                               visible=False)
+            except Exception as e:
+                self.logger.warning(f"Could not initialize tooltip annotation: {e}")
+                self.tooltip_annotation = None
             
             self.logger.info("Tooltip functionality initialized (hover and click)")
             
@@ -957,8 +1081,9 @@ class LiveChartVisualizer:
                 self.logger.debug(f"Hover tooltip shown for {closest_candle['instrument']}")
             else:
                 # Hide tooltip
-                self.tooltip_annotation.set_visible(False)
-                self.fig.canvas.draw_idle()
+                if self.tooltip_annotation and hasattr(self.tooltip_annotation, 'set_visible'):
+                    self.tooltip_annotation.set_visible(False)
+                    self.fig.canvas.draw_idle()
                 
         except Exception as e:
             self.logger.error(f"Error in hover event: {e}")
@@ -993,8 +1118,9 @@ class LiveChartVisualizer:
                 self.logger.info(f"Tooltip shown on click for {closest_candle['instrument']}")
             else:
                 # Hide tooltip if no candle found
-                self.tooltip_annotation.set_visible(False)
-                self.fig.canvas.draw_idle()
+                if self.tooltip_annotation and hasattr(self.tooltip_annotation, 'set_visible'):
+                    self.tooltip_annotation.set_visible(False)
+                    self.fig.canvas.draw_idle()
                 self.logger.debug("Click event: no closest candle found")
                 
         except Exception as e:
@@ -1067,7 +1193,7 @@ class LiveChartVisualizer:
     def _show_tooltip(self, event, candle_info):
         """Show tooltip with OHLC data"""
         try:
-            if not self.tooltip_annotation:
+            if not self.tooltip_annotation or not hasattr(self.tooltip_annotation, 'set_text'):
                 return
             
             candle = candle_info['candle']
@@ -1089,13 +1215,17 @@ class LiveChartVisualizer:
             tooltip_text += f"Close: ₹{candle['close']:.2f}\n"
             tooltip_text += f"Volume: {candle['volume']:,.0f}"
             
-            # Update tooltip
-            self.tooltip_annotation.set_text(tooltip_text)
-            self.tooltip_annotation.xy = (event.xdata, event.ydata)
-            self.tooltip_annotation.set_visible(True)
-            
-            # Force redraw
-            self.fig.canvas.draw_idle()
+            # Update tooltip with error handling
+            try:
+                self.tooltip_annotation.set_text(tooltip_text)
+                self.tooltip_annotation.xy = (event.xdata, event.ydata)
+                self.tooltip_annotation.set_visible(True)
+                
+                # Force redraw
+                self.fig.canvas.draw_idle()
+            except AttributeError as e:
+                self.logger.warning(f"Tooltip annotation not properly initialized: {e}")
+                return
             
         except Exception as e:
             self.logger.error(f"Error showing tooltip: {e}")
@@ -1124,6 +1254,10 @@ class LiveChartVisualizer:
                     else:
                         timestamp = datetime.fromtimestamp(candle_time)
                     
+                    # Ensure timestamp is timezone-naive
+                    if timestamp.tzinfo is not None:
+                        timestamp = timestamp.replace(tzinfo=None)
+                    
                     if latest_timestamp is None or timestamp > latest_timestamp:
                         latest_timestamp = timestamp
             
@@ -1146,10 +1280,28 @@ class TkinterChartApp:
         self.logger = logging.getLogger("TkinterChartApp")
         self.root = tk.Tk()
         self.root.title("Live Market Data Chart - 2x2 Grid Layout")
-        self.root.geometry("1400x900")
+        
+        # Enable standard window controls (minimize, maximize, close)
+        self.root.resizable(True, True)
+        self.root.minsize(800, 600)
+        
+        # Start in maximized mode
+        try:
+            # Method 1: Linux/Unix attributes
+            self.root.attributes('-zoomed', True)
+        except:
+            pass
+        
+        try:
+            # Method 2: Windows state (only on Windows)
+            import platform
+            if platform.system() == "Windows":
+                self.root.state('zoomed')
+        except:
+            pass
         
         # Set up proper window close handling
-        self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
+        self.root.protocol("WM_DELETE_WINDOW", self._handle_close)
         
         self.setup_ui()
         
@@ -1165,47 +1317,243 @@ class TkinterChartApp:
         # Set up status callback for scrolling updates
         self.chart.set_status_callback(self.update_status)
         
+        # Set up live data callback for payoff chart updates
+        self.chart.set_live_data_callback(self._on_live_data_update)
+        
+        # Set up window resize handler for responsive grid
+        self.root.bind('<Configure>', self._on_window_resize)
+        
         # Maximize window after UI is set up
         self.root.after(100, self._maximize_window)
     
     def _maximize_window(self):
-        """Maximize the window using multiple methods"""
+        """Maximize the window to current screen only (not spanning multiple monitors)"""
         try:
-            # Method 1: Linux/Unix attributes
-            self.root.attributes('-zoomed', True)
-        except:
-            pass
-        
-        try:
-            # Method 2: Windows state
-            self.root.state('zoomed')
-        except:
-            pass
-        
-        try:
-            # Method 3: Use geometry to fill screen
-            screen_width = self.root.winfo_screenwidth()
-            screen_height = self.root.winfo_screenheight()
-            self.root.geometry(f"{screen_width}x{screen_height}+0+0")
-        except:
-            pass
-        
-        try:
-            # Method 4: Use wm_attributes
-            self.root.wm_attributes('-zoomed', True)
-        except:
-            pass
+            # First try standard maximize methods
+            try:
+                # Method 1: Linux/Unix attributes
+                self.root.attributes('-zoomed', True)
+                self.logger.info("Window maximized using attributes method")
+            except:
+                pass
+            
+            try:
+                # Method 2: Windows state (only on Windows)
+                import platform
+                if platform.system() == "Windows":
+                    self.root.state('zoomed')
+                    self.logger.info("Window maximized using state method")
+            except:
+                pass
+            
+            # Force update the layout
+            self.root.update_idletasks()
+            
+            # Get the actual window size after maximization
+            actual_width = self.root.winfo_width()
+            actual_height = self.root.winfo_height()
+            self.logger.info(f"Window maximized to: {actual_width}x{actual_height}")
+            
+        except Exception as e:
+            self.logger.warning(f"Error maximizing window: {e}")
+            # Fallback: try manual geometry setting
+            try:
+                screen_width = self.root.winfo_screenwidth()
+                screen_height = self.root.winfo_screenheight()
+                max_width = min(screen_width, 1920)
+                max_height = min(screen_height, 1080)
+                self.root.geometry(f"{max_width}x{max_height}")
+                self.logger.info(f"Window set to fallback size: {max_width}x{max_height}")
+            except:
+                pass
         
         # Force update and raise window
         self.root.update_idletasks()
         self.root.lift()
         self.root.focus_force()
         
+        # Trigger a resize event to update the grid layout
+        self.root.after(300, self._trigger_resize_update)
+    
+    def _trigger_resize_update(self):
+        """Trigger a resize update after window maximization"""
+        try:
+            # Force update the layout first
+            self.root.update_idletasks()
+            
+            # Create a fake resize event to trigger the resize handler
+            class FakeEvent:
+                def __init__(self, widget):
+                    self.widget = widget
+            
+            fake_event = FakeEvent(self.root)
+            self._on_window_resize(fake_event)
+            
+            # Also manually update the grid layout
+            self._update_grid_layout()
+            
+        except Exception as e:
+            self.logger.warning(f"Error triggering resize update: {e}")
+    
+    def _update_grid_layout(self):
+        """Manually update the grid layout to ensure proper sizing"""
+        try:
+            # Force update the layout
+            self.root.update_idletasks()
+            
+            # Update matplotlib figure size to match the container
+            if hasattr(self, 'canvas') and self.canvas and hasattr(self, 'grid1_frame'):
+                grid1_width = self.grid1_frame.winfo_width()
+                grid1_height = self.grid1_frame.winfo_height()
+                
+                if grid1_width > 50 and grid1_height > 50:
+                    # Update the matplotlib figure size
+                    dpi = self.chart.fig.get_dpi()
+                    fig_width = max(grid1_width / dpi, 4.0)
+                    fig_height = max(grid1_height / dpi, 3.0)
+                    
+                    # Set the figure size
+                    self.chart.fig.set_size_inches(fig_width, fig_height)
+                    
+                    # Ensure proper spacing for rotated labels and combined title
+                    if hasattr(self.chart, 'price_ax') and self.chart.price_ax:
+                        self.chart.price_ax.margins(x=0.02, y=0.05)
+                        self.chart.fig.subplots_adjust(bottom=0.15, left=0.1, right=0.95, top=0.88)
+                    
+                    # Force the canvas to resize
+                    self.canvas.get_tk_widget().configure(width=grid1_width, height=grid1_height)
+                    
+                    # Redraw the canvas
+                    self.canvas.draw_idle()
+                    
+                    self.logger.info(f"Grid layout updated: {fig_width:.1f}x{fig_height:.1f} inches ({grid1_width}x{grid1_height} pixels)")
+            
+        except Exception as e:
+            self.logger.warning(f"Error updating grid layout: {e}")
+    
+    def _on_live_data_update(self, instrument_key, price, volume):
+        """Handle live data updates for payoff chart refresh with 5-second interval"""
+        try:
+            import time
+            current_time = time.time()
+            
+            # Get the latest price from datawarehouse to ensure consistency
+            datawarehouse_price = None
+            if hasattr(self, '_main_app') and self._main_app and hasattr(self._main_app, 'datawarehouse'):
+                datawarehouse_price = self._main_app.datawarehouse.get_latest_price(instrument_key)
+            
+            # Use datawarehouse price if available, otherwise fall back to live feed price
+            actual_price = datawarehouse_price if datawarehouse_price is not None else price
+            
+            # Store the latest live data in the chart's pending data
+            if hasattr(self.chart, 'pending_live_data'):
+                self.chart.pending_live_data[instrument_key] = {
+                    'price': actual_price,
+                    'volume': volume,
+                    'timestamp': current_time
+                }
+            
+            # Log price source for debugging
+            if datawarehouse_price is not None and datawarehouse_price != price:
+                self.logger.debug(f"Using datawarehouse price {actual_price} instead of live feed price {price}")
+            else:
+                self.logger.debug(f"Using live feed price {actual_price}")
+            
+            # Check if it's time to update Grid 2 (every 5 seconds)
+            if hasattr(self.chart, 'last_grid2_update') and hasattr(self.chart, 'grid2_update_interval'):
+                if current_time - self.chart.last_grid2_update >= self.chart.grid2_update_interval:
+                    self._update_grid2_with_live_data()
+                    self.chart.last_grid2_update = current_time
+                    self.logger.info(f"Updated Grid 2 with live data: {actual_price}")
+                else:
+                    # Log that we're storing data for later update
+                    remaining_time = self.chart.grid2_update_interval - (current_time - self.chart.last_grid2_update)
+                    self.logger.debug(f"Storing live data for {instrument_key}: {actual_price} (Grid 2 update in {remaining_time:.1f}s)")
+            else:
+                # Fallback: update immediately if interval attributes don't exist
+                self._update_grid2_with_live_data()
+                self.logger.debug(f"Updated Grid 2 immediately (no interval): {actual_price}")
+                
+        except Exception as e:
+            self.logger.error(f"Error handling live data update for payoff chart: {e}")
+    
+    def _update_grid2_with_live_data(self):
+        """Update Grid 2 with the latest stored live data"""
+        try:
+            # Check if we have a payoff chart displayed in Grid 2
+            if not (hasattr(self, '_current_payoff_data') and self._current_payoff_data):
+                return
+            
+            # Get the latest live data from the chart's pending data
+            if not hasattr(self.chart, 'pending_live_data') or not self.chart.pending_live_data:
+                return
+                
+            # Find the most recent data (use the first available instrument)
+            latest_data = None
+            for instrument_key, data in self.chart.pending_live_data.items():
+                if latest_data is None or data['timestamp'] > latest_data['timestamp']:
+                    latest_data = data
+            
+            if latest_data:
+                # Update the payoff chart with new spot price
+                self._update_payoff_chart_spot_price(latest_data['price'])
+                self.logger.debug(f"Updated Grid 2 with live data: {latest_data['price']}")
+                
+        except Exception as e:
+            self.logger.error(f"Error updating Grid 2 with live data: {e}")
+    
+    def _update_payoff_chart_spot_price(self, new_spot_price):
+        """Update the payoff chart with new spot price"""
+        try:
+            if not hasattr(self, '_current_payoff_data') or not self._current_payoff_data:
+                return
+                
+            # Check if Grid 2 has a matplotlib figure
+            if not hasattr(self, 'grid2_fig') or not self.grid2_fig:
+                return
+                
+            # Update the spot price line in the chart
+            ax = self.grid2_fig.axes[0] if self.grid2_fig.axes else None
+            if ax:
+                # Find and update the spot price line
+                for line in ax.lines:
+                    if hasattr(line, '_label') and 'Current Spot' in str(line._label):
+                        line.set_xdata([new_spot_price, new_spot_price])
+                        break
+                
+                # Update the chart
+                self.grid2_fig.canvas.draw_idle()
+                
+                # Update the current spot price
+                self._current_spot_price = new_spot_price
+                
+                self.logger.debug(f"Updated payoff chart spot price to: {new_spot_price}")
+                
+        except Exception as e:
+            self.logger.error(f"Error updating payoff chart spot price: {e}")
+        
     def setup_ui(self):
         """Set up the user interface"""
         # Main frame
         main_frame = ttk.Frame(self.root)
         main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+        
+        # Toolbar frame
+        toolbar_frame = ttk.Frame(main_frame)
+        toolbar_frame.pack(fill=tk.X, pady=(0, 10))
+        
+        # Toolbar buttons
+        self.settings_button = ttk.Button(toolbar_frame, text="Settings", 
+                                        command=self._show_settings_window)
+        self.settings_button.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.trade_book_button = ttk.Button(toolbar_frame, text="Trade Book", 
+                                          command=self._show_trade_book_window)
+        self.trade_book_button.pack(side=tk.LEFT, padx=(0, 5))
+        
+        self.info_button = ttk.Button(toolbar_frame, text="Info", 
+                                    command=self._show_info_window)
+        self.info_button.pack(side=tk.LEFT, padx=(0, 5))
         
         # Control frame (minimal - only status label)
         control_frame = ttk.Frame(main_frame)
@@ -1274,8 +1622,12 @@ class TkinterChartApp:
             for widget in self.grid2_frame.winfo_children():
                 widget.destroy()
             
+            # Create a main container frame for all content
+            main_container = ttk.Frame(self.grid2_frame)
+            main_container.pack(fill=tk.BOTH, expand=True)
+            
             # Header frame with title and Trade All button
-            header_frame = ttk.Frame(self.grid2_frame)
+            header_frame = ttk.Frame(main_container)
             header_frame.pack(fill=tk.X, pady=(10, 5))
             
             # Title
@@ -1289,8 +1641,12 @@ class TkinterChartApp:
                                              state="disabled")  # Initially disabled
             self.trade_all_button.pack(side=tk.RIGHT, padx=(10, 0))
             
+            # Content frame for charts and messages
+            self.content_frame = ttk.Frame(main_container)
+            self.content_frame.pack(fill=tk.BOTH, expand=True)
+            
             # Initial state message
-            initial_label = ttk.Label(self.grid2_frame, 
+            initial_label = ttk.Label(self.content_frame, 
                                     text="No active strategies\nUse 'Manage Strategies' to create or view strategies", 
                                     font=("Arial", 12),
                                     foreground="gray",
@@ -1299,7 +1655,7 @@ class TkinterChartApp:
             
             # Last updated
             last_updated = datetime.now().strftime("%H:%M:%S")
-            update_label = ttk.Label(self.grid2_frame, 
+            update_label = ttk.Label(self.content_frame, 
                                    text=f"Initialized: {last_updated}", 
                                    font=("Arial", 8), 
                                    foreground="gray")
@@ -1394,6 +1750,11 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
             # Add hover functionality to update existing strategy details
             self._add_hover_update(fig, ax, trade, payoff_data, spot_price, strategy_text_obj)
             
+            # Store data for live updates
+            self._current_payoff_data = payoff_data
+            self._current_spot_price = spot_price
+            self.grid2_fig = fig
+            
             # Embed in grid 2
             canvas = FigureCanvasTkAgg(fig, self.grid2_frame)
             canvas.draw()
@@ -1431,7 +1792,7 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
             
         except Exception as e:
             self.logger.error(f"Error clearing Grid 2: {e}")
-    
+        
     def display_error_message(self, error_message):
         """Display error message in Grid 2"""
         try:
@@ -1468,6 +1829,333 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
             
         except Exception as e:
             self.logger.error(f"Error displaying error message: {e}")
+    
+    def _clear_grid2(self):
+        """Clear Grid 2 content"""
+        try:
+            # Clear any existing content
+            for widget in self.grid2_frame.winfo_children():
+                widget.destroy()
+        except Exception as e:
+            self.logger.error(f"Error clearing Grid 2: {e}")
+    
+    def _clear_grid2_chart(self):
+        """Clear Grid 2 chart content (for matplotlib plots)"""
+        try:
+            # Clear content frame if it exists
+            if hasattr(self, 'content_frame'):
+                try:
+                    for widget in self.content_frame.winfo_children():
+                        widget.destroy()
+                except Exception as content_error:
+                    self.logger.warning(f"Error clearing content frame: {content_error}")
+            else:
+                # Fallback: clear all widgets in grid2_frame
+                try:
+                    for widget in self.grid2_frame.winfo_children():
+                        widget.destroy()
+                except Exception as grid_error:
+                    self.logger.warning(f"Error clearing grid2_frame: {grid_error}")
+            
+            # Reset canvas references
+            if hasattr(self, 'grid2_canvas'):
+                delattr(self, 'grid2_canvas')
+            if hasattr(self, 'grid2_fig'):
+                delattr(self, 'grid2_fig')
+            if hasattr(self, 'grid2_ax'):
+                delattr(self, 'grid2_ax')
+            
+            # Ensure grid2_frame is properly configured
+            self.grid2_frame.grid_rowconfigure(0, weight=1)
+            self.grid2_frame.grid_columnconfigure(0, weight=1)
+                
+            # Force update the frame to ensure it's visible
+            self.grid2_frame.update_idletasks()
+            
+        except Exception as e:
+            self.logger.error(f"Error clearing Grid 2 chart: {e}")
+    
+    def _initialize_grid2_axes(self):
+        """Initialize Grid 2 matplotlib axes if they don't exist"""
+        try:
+            self.logger.info("_initialize_grid2_axes called")
+            
+            if not hasattr(self, 'grid2_ax') or self.grid2_ax is None:
+                self.logger.info("Creating new matplotlib axes for Grid 2")
+                
+                # Create matplotlib figure and axes for Grid 2
+                import matplotlib.pyplot as plt
+                from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+                
+                # Create figure for Grid 2
+                self.grid2_fig, self.grid2_ax = plt.subplots(figsize=(6, 4))
+                
+                # Create canvas and add to content frame (or grid2_frame as fallback)
+                target_frame = self.content_frame if hasattr(self, 'content_frame') else self.grid2_frame
+                self.grid2_canvas = FigureCanvasTkAgg(self.grid2_fig, target_frame)
+                canvas_widget = self.grid2_canvas.get_tk_widget()
+                canvas_widget.pack(fill=tk.BOTH, expand=True)
+                
+                self.logger.info(f"Canvas widget packed in {target_frame}: {canvas_widget}")
+                
+                # Set initial properties
+                self.grid2_ax.set_xlim(0, 1)
+                self.grid2_ax.set_ylim(0, 1)
+                self.grid2_ax.set_xticks([])
+                self.grid2_ax.set_yticks([])
+                self.grid2_ax.set_title("")
+                
+                # Force update to ensure visibility
+                self.grid2_frame.update_idletasks()
+                self.grid2_canvas.draw()
+                
+                self.logger.info("Successfully initialized Grid 2 matplotlib axes and canvas")
+            else:
+                self.logger.info("Grid 2 axes already exist, skipping initialization")
+                
+        except Exception as e:
+            self.logger.error(f"Error initializing Grid 2 axes: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def display_open_trades_payoff(self, open_trades, spot_price):
+        """Display payoff charts for open trades"""
+        try:
+            from trade_models import PositionType, OptionType
+            import numpy as np
+            
+            self.logger.info(f"display_open_trades_payoff called with {len(open_trades)} trades, spot_price: {spot_price}")
+            
+            # Clear Grid 2 chart
+            self._clear_grid2_chart()
+            
+            # Ensure axes are initialized
+            self._initialize_grid2_axes()
+            
+            if not open_trades:
+                self.logger.warning("No open trades provided to display_open_trades_payoff")
+                self.display_error_message("No open trades to display")
+                return
+            
+            # Calculate combined payoff for all open trades
+            price_range = np.linspace(spot_price * 0.8, spot_price * 1.2, 100)
+            total_payoff = np.zeros_like(price_range)
+            
+            self.logger.info(f"Calculating payoff for price range: {price_range[0]:.0f} to {price_range[-1]:.0f}")
+            
+            trade_details = []
+            
+            for trade in open_trades:
+                trade_payoff = np.zeros_like(price_range)
+                trade_info = {
+                    'trade_id': trade.trade_id,
+                    'strategy': trade.strategy_name,
+                    'legs': []
+                }
+                
+                for leg in trade.legs:
+                    if leg.entry_price is not None:
+                        # Calculate payoff for this leg
+                        if leg.position_type == PositionType.LONG:
+                            if leg.option_type == OptionType.CALL:
+                                # Long Call: max(0, S - K) - premium
+                                leg_payoff = np.maximum(0, price_range - leg.strike_price) - leg.entry_price
+                            else:  # PUT
+                                # Long Put: max(0, K - S) - premium
+                                leg_payoff = np.maximum(0, leg.strike_price - price_range) - leg.entry_price
+                        else:  # SHORT
+                            if leg.option_type == OptionType.CALL:
+                                # Short Call: premium - max(0, S - K)
+                                leg_payoff = leg.entry_price - np.maximum(0, price_range - leg.strike_price)
+                            else:  # PUT
+                                # Short Put: premium - max(0, K - S)
+                                leg_payoff = leg.entry_price - np.maximum(0, leg.strike_price - price_range)
+                        
+                        # Multiply by quantity
+                        leg_payoff *= leg.quantity
+                        trade_payoff += leg_payoff
+                        
+                        trade_info['legs'].append({
+                            'type': leg.option_type.value,
+                            'position': leg.position_type.value,
+                            'strike': leg.strike_price,
+                            'quantity': leg.quantity,
+                            'entry_price': leg.entry_price
+                        })
+                
+                total_payoff += trade_payoff
+                trade_details.append(trade_info)
+            
+            # Plot the combined payoff
+            self.grid2_ax.plot(price_range, total_payoff, 'b-', linewidth=2, label='Total Payoff')
+            
+            # Add zero line
+            self.grid2_ax.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+            
+            # Add current spot price line
+            self.grid2_ax.axvline(x=spot_price, color='red', linestyle=':', alpha=0.7, label=f'Current Spot: ₹{spot_price:.0f}')
+            
+            # Fill areas above and below zero
+            self.grid2_ax.fill_between(price_range, total_payoff, 0, 
+                                     where=(total_payoff >= 0), 
+                                     color='green', alpha=0.3, label='Profit Zone')
+            self.grid2_ax.fill_between(price_range, total_payoff, 0, 
+                                     where=(total_payoff < 0), 
+                                     color='red', alpha=0.3, label='Loss Zone')
+            
+            # Set labels and title
+            self.grid2_ax.set_xlabel('Underlying Price (₹)', fontsize=12)
+            self.grid2_ax.set_ylabel('Profit/Loss (₹)', fontsize=12)
+            self.grid2_ax.set_title(f'Open Trades Payoff - {len(open_trades)} Trades', fontsize=14, fontweight='bold')
+            
+            # Add legend
+            self.grid2_ax.legend(loc='upper left')
+            
+            # Format axes
+            self.grid2_ax.grid(True, alpha=0.3)
+            
+            # Store trade details for hover functionality
+            self._current_open_trades = trade_details
+            self._current_spot_price = spot_price
+            
+            # Store data for live updates
+            self._current_payoff_data = {
+                "price_range": price_range,
+                "payoffs": total_payoff
+            }
+            self.grid2_fig = self.grid2_ax.figure if hasattr(self, 'grid2_ax') else None
+            
+            # Add hover functionality
+            self._add_open_trades_hover()
+            
+            # Refresh the chart
+            self.logger.info("Refreshing chart display...")
+            try:
+                if hasattr(self, 'grid2_canvas') and self.grid2_canvas is not None:
+                    self.logger.info("Using grid2_canvas for refresh")
+                    self.grid2_canvas.draw()
+                    # Force update the canvas
+                    self.grid2_canvas.flush_events()
+                    self.logger.info("Grid2 canvas refreshed and flushed")
+                else:
+                    self.logger.info("Using main canvas for refresh")
+                    self.canvas.draw()
+            except Exception as refresh_error:
+                self.logger.error(f"Error refreshing canvas: {refresh_error}")
+                # Try to reinitialize the canvas
+                try:
+                    self._initialize_grid2_axes()
+                    if hasattr(self, 'grid2_canvas') and self.grid2_canvas is not None:
+                        self.grid2_canvas.draw()
+                        self.logger.info("Canvas reinitialized and refreshed")
+                except Exception as reinit_error:
+                    self.logger.error(f"Error reinitializing canvas: {reinit_error}")
+            
+            # Force update the frame
+            self.grid2_frame.update_idletasks()
+            
+            # Additional debugging
+            try:
+                if hasattr(self, 'grid2_canvas') and self.grid2_canvas is not None:
+                    canvas_widget = self.grid2_canvas.get_tk_widget()
+                    self.logger.info(f"Canvas widget visible: {canvas_widget.winfo_viewable()}")
+                    self.logger.info(f"Canvas widget size: {canvas_widget.winfo_width()}x{canvas_widget.winfo_height()}")
+                    self.logger.info(f"Grid2 frame size: {self.grid2_frame.winfo_width()}x{self.grid2_frame.winfo_height()}")
+            except Exception as debug_error:
+                self.logger.warning(f"Error in debug logging: {debug_error}")
+            
+            self.logger.info(f"Successfully displayed open trades payoff for {len(open_trades)} trades")
+            
+        except Exception as e:
+            self.logger.error(f"Error displaying open trades payoff: {e}")
+            self.display_error_message(f"Failed to display open trades payoff: {e}")
+    
+    def _add_open_trades_hover(self):
+        """Add hover functionality for open trades payoff chart"""
+        try:
+            if hasattr(self, '_open_trades_hover_connection'):
+                self.canvas.mpl_disconnect(self._open_trades_hover_connection)
+            
+            def on_hover(event):
+                if event.inaxes == self.grid2_ax:
+                    if hasattr(self, '_current_open_trades') and self._current_open_trades:
+                        # Get price at cursor
+                        price = event.xdata
+                        if price is not None:
+                            # Calculate total payoff at this price
+                            total_payoff = 0
+                            trade_summary = []
+                            
+                            for trade in self._current_open_trades:
+                                trade_payoff = 0
+                                for leg in trade['legs']:
+                                    if leg['position'] == 'LONG':
+                                        if leg['type'] == 'CALL':
+                                            leg_payoff = max(0, price - leg['strike']) - leg['entry_price']
+                                        else:  # PUT
+                                            leg_payoff = max(0, leg['strike'] - price) - leg['entry_price']
+                                    else:  # SHORT
+                                        if leg['type'] == 'CALL':
+                                            leg_payoff = leg['entry_price'] - max(0, price - leg['strike'])
+                                        else:  # PUT
+                                            leg_payoff = leg['entry_price'] - max(0, leg['strike'] - price)
+                                    
+                                    leg_payoff *= leg['quantity']
+                                    trade_payoff += leg_payoff
+                                
+                                total_payoff += trade_payoff
+                                trade_summary.append(f"{trade['strategy']}: ₹{trade_payoff:.0f}")
+                            
+                            # Update tooltip
+                            tooltip_text = f"Price: ₹{price:.0f}\nTotal P&L: ₹{total_payoff:.0f}\n\nTrades:\n" + "\n".join(trade_summary)
+                            
+                            # Remove existing tooltip
+                            if hasattr(self, '_open_trades_tooltip'):
+                                self._open_trades_tooltip.remove()
+                            
+                            # Add new tooltip
+                            self._open_trades_tooltip = self.grid2_ax.text(0.02, 0.98, tooltip_text,
+                                                                        transform=self.grid2_ax.transAxes,
+                                                                        fontsize=9, verticalalignment='top',
+                                                                        bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.9))
+                            if hasattr(self, 'grid2_canvas'):
+                                self.grid2_canvas.draw_idle()
+                            else:
+                                self.canvas.draw_idle()
+            
+            canvas_to_use = self.grid2_canvas if hasattr(self, 'grid2_canvas') else self.canvas
+            self._open_trades_hover_connection = canvas_to_use.mpl_connect('motion_notify_event', on_hover)
+            
+        except Exception as e:
+            self.logger.error(f"Error adding open trades hover functionality: {e}")
+    
+    def _refresh_chart_display(self):
+        """Refresh the chart display based on current open trades"""
+        try:
+            # Check if we have access to the main app to refresh the chart
+            if hasattr(self, '_main_app') and self._main_app:
+                # Trigger chart refresh through main app
+                self._main_app._display_appropriate_chart()
+            else:
+                # Fallback: try to refresh directly
+                from trade_database import TradeDatabase
+                db = TradeDatabase("trades.db")
+                open_trades = db.get_open_trades()
+                
+                if open_trades:
+                    # Get current spot price
+                    primary_instrument = list(self._main_app.instruments[self._main_app.broker_type].keys())[0]
+                    spot_price = self._main_app.datawarehouse.get_latest_price(primary_instrument)
+                    if spot_price is None:
+                        spot_price = 250
+                    
+                    self.display_open_trades_payoff(open_trades, spot_price)
+                else:
+                    # No open trades, display Iron Condor strategy
+                    self._main_app._display_iron_condor_strategy()
+                    
+        except Exception as e:
+            self.logger.error(f"Error refreshing chart display: {e}")
     
     def _add_hover_update(self, fig, ax, trade, payoff_data, spot_price, strategy_text_obj):
         """Add hover functionality to update existing strategy details text"""
@@ -1556,7 +2244,7 @@ Breakevens: {', '.join(breakeven_texts)}"""
         except Exception as e:
             self.logger.error(f"Error getting strategy details at price: {e}")
             return f"Error loading details: {e}"
-        
+    
     def update_status(self, message):
         """Update the status label with scrolling information"""
         try:
@@ -1565,6 +2253,72 @@ Breakevens: {', '.join(breakeven_texts)}"""
         except Exception as e:
             self.logger.error(f"Error updating status: {e}")
     
+    
+    def _on_window_resize(self, event):
+        """Handle window resize events to make grid responsive"""
+        try:
+            # Only handle resize events for the main window (not child widgets)
+            if event.widget == self.root:
+                # Force update the layout first
+                self.root.update_idletasks()
+                
+                # Update matplotlib figure size to match the container
+                if hasattr(self, 'canvas') and self.canvas:
+                    # Get the current size of the grid1_frame
+                    if hasattr(self, 'grid1_frame'):
+                        grid1_width = self.grid1_frame.winfo_width()
+                        grid1_height = self.grid1_frame.winfo_height()
+                        
+                        # Only resize if we have valid dimensions
+                        if grid1_width > 50 and grid1_height > 50:
+                            # Update the matplotlib figure size
+                            dpi = self.chart.fig.get_dpi()
+                            fig_width = max(grid1_width / dpi, 4.0)  # Minimum 4 inches
+                            fig_height = max(grid1_height / dpi, 3.0)  # Minimum 3 inches
+                            
+                            # Set the figure size
+                            self.chart.fig.set_size_inches(fig_width, fig_height)
+                            
+                            # Ensure proper spacing for rotated labels and combined title after resize
+                            if hasattr(self.chart, 'price_ax') and self.chart.price_ax:
+                                self.chart.price_ax.margins(x=0.02, y=0.05)
+                                self.chart.fig.subplots_adjust(bottom=0.15, left=0.1, right=0.95, top=0.88)
+                            
+                            # Force the canvas to resize
+                            self.canvas.get_tk_widget().configure(width=grid1_width, height=grid1_height)
+                            
+                            # Redraw the canvas
+                            self.canvas.draw_idle()
+                            
+                            self.logger.info(f"Resized chart to {fig_width:.1f}x{fig_height:.1f} inches ({grid1_width}x{grid1_height} pixels)")
+                
+                # Update Grid 2 figure if it exists
+                if hasattr(self, 'grid2_fig') and self.grid2_fig:
+                    if hasattr(self, 'grid2_frame'):
+                        grid2_width = self.grid2_frame.winfo_width()
+                        grid2_height = self.grid2_frame.winfo_height()
+                        
+                        if grid2_width > 50 and grid2_height > 50:
+                            dpi = self.grid2_fig.get_dpi()
+                            fig_width = max(grid2_width / dpi, 4.0)
+                            fig_height = max(grid2_height / dpi, 3.0)
+                            
+                            self.grid2_fig.set_size_inches(fig_width, fig_height)
+                            
+                            # Force the canvas to resize
+                            if hasattr(self.grid2_fig, 'canvas') and self.grid2_fig.canvas:
+                                self.grid2_fig.canvas.get_tk_widget().configure(width=grid2_width, height=grid2_height)
+                            
+                            self.grid2_fig.canvas.draw_idle()
+                            
+                            self.logger.info(f"Resized Grid 2 chart to {fig_width:.1f}x{fig_height:.1f} inches ({grid2_width}x{grid2_height} pixels)")
+                            
+        except Exception as e:
+            self.logger.warning(f"Error handling window resize: {e}")
+    
+    def _handle_close(self):
+        """Handle window close event - wrapper for on_closing"""
+        self.on_closing()
     
     def on_closing(self):
         """Handle window close event"""
@@ -1596,7 +2350,7 @@ Breakevens: {', '.join(breakeven_texts)}"""
             # Create new window
             trade_window = tk.Toplevel(self.root)
             trade_window.title("Iron Condor - Trade All")
-            trade_window.geometry("800x600")
+            trade_window.geometry("820x620")
             trade_window.resizable(True, True)
             
             # Center the window
@@ -1705,9 +2459,14 @@ Max Loss: ₹{max_loss:,.0f}"""
             metrics_label = ttk.Label(footer_frame, text=metrics_text, font=("Arial", 10, "bold"))
             metrics_label.pack(anchor=tk.W)
             
-            # Close button
-            close_button = ttk.Button(footer_frame, text="Close", command=trade_window.destroy)
-            close_button.pack(side=tk.RIGHT, padx=(10, 0))
+            # Buttons frame
+            buttons_frame = ttk.Frame(footer_frame)
+            buttons_frame.pack(side=tk.RIGHT, padx=(10, 0))
+            
+            # Trade button
+            trade_button = ttk.Button(buttons_frame, text="Trade", 
+                                    command=lambda: self._place_iron_condor_orders(trade_window, trade))
+            trade_button.pack(side=tk.RIGHT)
             
             # Focus on the window
             trade_window.focus_set()
@@ -1718,6 +2477,908 @@ Max Loss: ₹{max_loss:,.0f}"""
             self.logger.error(f"Error showing trade all window: {e}")
             import tkinter.messagebox as msgbox
             msgbox.showerror("Error", f"Failed to open trade window: {e}")
+    
+    def _place_iron_condor_orders(self, trade_window, trade):
+        """Place all Iron Condor orders using Upstox API"""
+        try:
+            import tkinter.messagebox as msgbox
+            
+            # Check if we have access to the agent
+            if not hasattr(self, '_current_agent') or not self._current_agent:
+                msgbox.showerror("Error", "No trading agent available. Please ensure you're connected to Upstox.")
+                return
+            
+            # Check if agent supports place_order_v3
+            if not hasattr(self._current_agent, 'place_order_v3'):
+                msgbox.showerror("Error", "Trading agent does not support order placement.")
+                return
+            
+            # Show progress window
+            progress_window = tk.Toplevel(trade_window)
+            progress_window.title("Placing Orders...")
+            progress_window.geometry("400x200")
+            progress_window.transient(trade_window)
+            progress_window.grab_set()
+            
+            # Center the progress window
+            progress_window.geometry("+%d+%d" % (
+                trade_window.winfo_rootx() + 50,
+                trade_window.winfo_rooty() + 50
+            ))
+            
+            # Progress frame
+            progress_frame = ttk.Frame(progress_window)
+            progress_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+            
+            # Progress label
+            progress_label = ttk.Label(progress_frame, text="Placing orders...", font=("Arial", 12))
+            progress_label.pack(pady=(0, 10))
+            
+            # Progress bar
+            progress_bar = ttk.Progressbar(progress_frame, mode='determinate', maximum=len(trade.legs))
+            progress_bar.pack(fill=tk.X, pady=(0, 10))
+            
+            # Status text
+            status_text = tk.Text(progress_frame, height=8, width=50)
+            status_text.pack(fill=tk.BOTH, expand=True)
+            
+            # Place orders for each leg
+            successful_orders = 0
+            failed_orders = 0
+            order_results = []
+            
+            for i, leg in enumerate(trade.legs, 1):
+                try:
+                    # Update progress
+                    progress_label.config(text=f"Placing order {i}/{len(trade.legs)}: {leg.instrument_name}")
+                    progress_bar['value'] = i
+                    progress_window.update()
+                    
+                    # Prepare order details
+                    order_details = {
+                        'quantity': leg.quantity,
+                        'product': 'D',  # Intraday product
+                        'validity': 'DAY',
+                        'price': leg.entry_price,
+                        'instrument_token': leg.instrument,  # This should be the instrument token
+                        'order_type': 'MARKET',
+                        'transaction_type': 'BUY' if leg.position_type.value == 'LONG' else 'SELL',
+                        'tag': f"IC_{trade.trade_id}_Leg{i}"
+                    }
+                    
+                    # Place the order
+                    response = self._current_agent.place_order_v3(order_details)
+                    order_results.append({
+                        'leg': i,
+                        'instrument': leg.instrument_name,
+                        'status': 'SUCCESS',
+                        'response': response
+                    })
+                    successful_orders += 1
+                    
+                    # Update status
+                    status_text.insert(tk.END, f"✅ Leg {i}: {leg.instrument_name} - Order placed successfully\n")
+                    status_text.see(tk.END)
+                    progress_window.update()
+                    
+                except Exception as e:
+                    order_results.append({
+                        'leg': i,
+                        'instrument': leg.instrument_name,
+                        'status': 'FAILED',
+                        'error': str(e)
+                    })
+                    failed_orders += 1
+                    
+                    # Update status
+                    status_text.insert(tk.END, f"❌ Leg {i}: {leg.instrument_name} - Failed: {str(e)}\n")
+                    status_text.see(tk.END)
+                    progress_window.update()
+            
+            # Final status
+            progress_label.config(text="Order placement completed")
+            status_text.insert(tk.END, f"\n--- Order Summary ---\n")
+            status_text.insert(tk.END, f"Successful: {successful_orders}\n")
+            status_text.insert(tk.END, f"Failed: {failed_orders}\n")
+            status_text.see(tk.END)
+            
+            # Add close button
+            close_btn = ttk.Button(progress_frame, text="Close", command=progress_window.destroy)
+            close_btn.pack(pady=(10, 0))
+            
+            # Save trade to database if at least one order was successful
+            if successful_orders > 0:
+                try:
+                    from trade_database import TradeDatabase
+                    from trade_models import TradeStatus
+                    from datetime import datetime
+                    
+                    # Initialize database
+                    db = TradeDatabase("trades.db")
+                    
+                    # Create trade object for database
+                    trade_for_db = trade
+                    trade_for_db.status = TradeStatus.OPEN
+                    trade_for_db.created_timestamp = datetime.now()
+                    
+                    # Save trade to database
+                    if db.save_trade(trade_for_db):
+                        self.logger.info(f"Trade {trade.trade_id} saved to database successfully")
+                        status_text.insert(tk.END, f"\n💾 Trade saved to database: {trade.trade_id}\n")
+                        status_text.see(tk.END)
+                        
+                        # Refresh Trade Book if it's open
+                        self._refresh_trade_book_after_execution()
+                        
+                        # Refresh chart display to show new open trades
+                        self._refresh_chart_display()
+                    else:
+                        self.logger.warning(f"Failed to save trade {trade.trade_id} to database")
+                        status_text.insert(tk.END, f"\n⚠️ Warning: Failed to save trade to database\n")
+                        status_text.see(tk.END)
+                        
+                except Exception as e:
+                    self.logger.error(f"Error saving trade to database: {e}")
+                    status_text.insert(tk.END, f"\n❌ Error saving trade to database: {e}\n")
+                    status_text.see(tk.END)
+            
+            # Log results
+            self.logger.info(f"Iron Condor order placement completed: {successful_orders} successful, {failed_orders} failed")
+            
+            # Show final message
+            if failed_orders == 0:
+                msgbox.showinfo("Success", f"All {successful_orders} orders placed successfully!\n\nTrade saved to database.")
+            else:
+                msgbox.showwarning("Partial Success", 
+                                 f"Order placement completed:\n"
+                                 f"✅ Successful: {successful_orders}\n"
+                                 f"❌ Failed: {failed_orders}\n\n"
+                                 f"Trade saved to database.\n\n"
+                                 f"Check the progress window for details.")
+            
+        except Exception as e:
+            self.logger.error(f"Error placing Iron Condor orders: {e}")
+            import tkinter.messagebox as msgbox
+            msgbox.showerror("Error", f"Failed to place orders: {e}")
+    
+    def _show_settings_window(self):
+        """Show Settings window"""
+        try:
+            # Create settings window
+            settings_window = tk.Toplevel(self.root)
+            settings_window.title("Settings")
+            settings_window.geometry("800x600")
+            settings_window.resizable(True, True)
+            
+            # Center the window
+            settings_window.transient(self.root)
+            settings_window.grab_set()
+            
+            # Main frame
+            main_frame = ttk.Frame(settings_window)
+            main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+            
+            # Title
+            title_label = ttk.Label(main_frame, text="Settings", font=("Arial", 16, "bold"))
+            title_label.pack(pady=(0, 20))
+            
+            # Settings sections
+            # Chart Settings
+            chart_frame = ttk.LabelFrame(main_frame, text="Chart Settings", padding=10)
+            chart_frame.pack(fill=tk.X, pady=(0, 10))
+            
+            # Load existing settings
+            settings = self._load_settings()
+            
+            # Chart refresh interval
+            ttk.Label(chart_frame, text="Chart Refresh Interval (seconds):").pack(anchor=tk.W)
+            refresh_var = tk.StringVar(value=settings.get('refresh_interval', '1'))
+            refresh_entry = ttk.Entry(chart_frame, textvariable=refresh_var, width=10)
+            refresh_entry.pack(anchor=tk.W, pady=(0, 10))
+            
+            # Max candles
+            ttk.Label(chart_frame, text="Maximum Candles:").pack(anchor=tk.W)
+            candles_var = tk.StringVar(value=settings.get('max_candles', '500'))
+            candles_entry = ttk.Entry(chart_frame, textvariable=candles_var, width=10)
+            candles_entry.pack(anchor=tk.W, pady=(0, 10))
+            
+            # Trading Settings
+            trading_frame = ttk.LabelFrame(main_frame, text="Trading Settings", padding=10)
+            trading_frame.pack(fill=tk.X, pady=(0, 10))
+            
+            # Lot size
+            ttk.Label(trading_frame, text="Lot Size:").pack(anchor=tk.W)
+            lot_size_var = tk.StringVar(value=settings.get('lot_size', '75'))
+            lot_size_entry = ttk.Entry(trading_frame, textvariable=lot_size_var, width=10)
+            lot_size_entry.pack(anchor=tk.W, pady=(0, 10))
+            
+            # Default order type
+            ttk.Label(trading_frame, text="Default Order Type:").pack(anchor=tk.W)
+            order_type_var = tk.StringVar(value=settings.get('order_type', 'MARKET'))
+            order_type_combo = ttk.Combobox(trading_frame, textvariable=order_type_var, 
+                                          values=["MARKET", "LIMIT"], state="readonly", width=15)
+            order_type_combo.pack(anchor=tk.W, pady=(0, 10))
+            
+            # Buttons
+            button_frame = ttk.Frame(main_frame)
+            button_frame.pack(fill=tk.X, pady=(20, 0))
+            
+            # Save button
+            save_button = ttk.Button(button_frame, text="Save Settings", 
+                                   command=lambda: self._save_settings(settings_window, {
+                                       'refresh_interval': refresh_var.get(),
+                                       'max_candles': candles_var.get(),
+                                       'lot_size': lot_size_var.get(),
+                                       'order_type': order_type_var.get()
+                                   }))
+            save_button.pack(side=tk.LEFT, padx=(0, 10))
+            
+            # Cancel button
+            cancel_button = ttk.Button(button_frame, text="Cancel", 
+                                     command=settings_window.destroy)
+            cancel_button.pack(side=tk.LEFT)
+            
+            # Focus on the window
+            settings_window.focus_set()
+            
+            self.logger.info("Opened Settings window")
+            
+        except Exception as e:
+            self.logger.error(f"Error showing settings window: {e}")
+            import tkinter.messagebox as msgbox
+            msgbox.showerror("Error", f"Failed to open settings window: {e}")
+    
+    def _show_trade_book_window(self):
+        """Show Trade Book window with tabs"""
+        try:
+            # Create trade book window
+            trade_book_window = tk.Toplevel(self.root)
+            trade_book_window.title("Trade Book")
+            trade_book_window.geometry("1200x700")
+            trade_book_window.resizable(True, True)
+            
+            # Center the window
+            trade_book_window.transient(self.root)
+            trade_book_window.grab_set()
+            
+            # Main frame
+            main_frame = ttk.Frame(trade_book_window)
+            main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+            
+            # Title
+            title_label = ttk.Label(main_frame, text="Trade Book", font=("Arial", 16, "bold"))
+            title_label.pack(pady=(0, 20))
+            
+            # Create notebook for tabs
+            notebook = ttk.Notebook(main_frame)
+            notebook.pack(fill=tk.BOTH, expand=True)
+            
+            # Open Trades Tab
+            open_frame = ttk.Frame(notebook)
+            notebook.add(open_frame, text="Open Trades")
+            
+            # Create treeview for open trades with tree structure
+            open_columns = ("Trade ID", "Strategy", "Status", "Created", "P&L", "Notes")
+            self.open_tree = ttk.Treeview(open_frame, columns=open_columns, show="tree headings", height=15)
+            
+            # Configure columns
+            self.open_tree.heading("#0", text="Trade Details")
+            self.open_tree.heading("Trade ID", text="Trade ID")
+            self.open_tree.heading("Strategy", text="Strategy")
+            self.open_tree.heading("Status", text="Status")
+            self.open_tree.heading("Created", text="Created")
+            self.open_tree.heading("P&L", text="P&L")
+            self.open_tree.heading("Notes", text="Notes")
+            
+            # Set column widths
+            self.open_tree.column("#0", width=200)
+            self.open_tree.column("Trade ID", width=150)
+            self.open_tree.column("Strategy", width=120)
+            self.open_tree.column("Status", width=80)
+            self.open_tree.column("Created", width=120)
+            self.open_tree.column("P&L", width=100)
+            self.open_tree.column("Notes", width=200)
+            
+            # Add scrollbar for open trades
+            open_scrollbar = ttk.Scrollbar(open_frame, orient=tk.VERTICAL, command=self.open_tree.yview)
+            self.open_tree.configure(yscrollcommand=open_scrollbar.set)
+            
+            # Pack open trades treeview and scrollbar
+            self.open_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            open_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            # Closed Trades Tab
+            closed_frame = ttk.Frame(notebook)
+            notebook.add(closed_frame, text="Closed Trades")
+            
+            # Create treeview for closed trades with tree structure
+            closed_columns = ("Trade ID", "Strategy", "Status", "Created", "Closed", "P&L", "Notes")
+            self.closed_tree = ttk.Treeview(closed_frame, columns=closed_columns, show="tree headings", height=15)
+            
+            # Configure columns
+            self.closed_tree.heading("#0", text="Trade Details")
+            self.closed_tree.heading("Trade ID", text="Trade ID")
+            self.closed_tree.heading("Strategy", text="Strategy")
+            self.closed_tree.heading("Status", text="Status")
+            self.closed_tree.heading("Created", text="Created")
+            self.closed_tree.heading("Closed", text="Closed")
+            self.closed_tree.heading("P&L", text="P&L")
+            self.closed_tree.heading("Notes", text="Notes")
+            
+            # Set column widths
+            self.closed_tree.column("#0", width=200)
+            self.closed_tree.column("Trade ID", width=150)
+            self.closed_tree.column("Strategy", width=120)
+            self.closed_tree.column("Status", width=80)
+            self.closed_tree.column("Created", width=120)
+            self.closed_tree.column("Closed", width=120)
+            self.closed_tree.column("P&L", width=100)
+            self.closed_tree.column("Notes", width=200)
+            
+            # Add scrollbar for closed trades
+            closed_scrollbar = ttk.Scrollbar(closed_frame, orient=tk.VERTICAL, command=self.closed_tree.yview)
+            self.closed_tree.configure(yscrollcommand=closed_scrollbar.set)
+            
+            # Pack closed trades treeview and scrollbar
+            self.closed_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            closed_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            # Bind double-click events to both trees
+            self.open_tree.bind("<Double-1>", self._on_tree_double_click)
+            self.closed_tree.bind("<Double-1>", self._on_tree_double_click)
+            
+            # Store references to trees for leg details
+            self.open_tree.leg_tree_type = "open"
+            self.closed_tree.leg_tree_type = "closed"
+            
+            # Add sample data
+            self._populate_trade_book()
+            
+            # Footer with buttons
+            footer_frame = ttk.Frame(main_frame)
+            footer_frame.pack(fill=tk.X, pady=(20, 0))
+            
+            # Refresh button
+            refresh_button = ttk.Button(footer_frame, text="Refresh", 
+                                      command=self._refresh_trade_book_tabs)
+            refresh_button.pack(side=tk.LEFT, padx=(0, 10))
+            
+            # Close button
+            close_button = ttk.Button(footer_frame, text="Close", 
+                                    command=trade_book_window.destroy)
+            close_button.pack(side=tk.RIGHT)
+            
+            # Focus on the window
+            trade_book_window.focus_set()
+            
+            self.logger.info("Opened Trade Book window with tabs")
+            
+        except Exception as e:
+            self.logger.error(f"Error showing trade book window: {e}")
+            import tkinter.messagebox as msgbox
+            msgbox.showerror("Error", f"Failed to open trade book window: {e}")
+    
+    def _show_info_window(self):
+        """Show Info window"""
+        try:
+            # Create info window
+            info_window = tk.Toplevel(self.root)
+            info_window.title("Application Information")
+            info_window.geometry("800x600")
+            info_window.resizable(True, True)
+            
+            # Center the window
+            info_window.transient(self.root)
+            info_window.grab_set()
+            
+            # Main frame
+            main_frame = ttk.Frame(info_window)
+            main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+            
+            # Title
+            title_label = ttk.Label(main_frame, text="Application Information", font=("Arial", 16, "bold"))
+            title_label.pack(pady=(0, 20))
+            
+            # Info sections
+            # Application Info
+            app_frame = ttk.LabelFrame(main_frame, text="Application", padding=10)
+            app_frame.pack(fill=tk.X, pady=(0, 10))
+            
+            app_info = """Application: Live Market Data Chart
+Version: 1.0.0
+Description: Real-time market data visualization and options trading platform
+Framework: Python Tkinter + Matplotlib
+Broker Support: Upstox, Kite Connect"""
+            
+            ttk.Label(app_frame, text=app_info, font=("Arial", 10)).pack(anchor=tk.W)
+            
+            # Features Info
+            features_frame = ttk.LabelFrame(main_frame, text="Features", padding=10)
+            features_frame.pack(fill=tk.X, pady=(0, 10))
+            
+            features_info = """• Real-time market data streaming
+• Interactive candlestick charts
+• Iron Condor strategy builder
+• Options chain data integration
+• Live P&L calculations
+• Order placement via Upstox API
+• Historical data analysis
+• Multiple broker support"""
+            
+            ttk.Label(features_frame, text=features_info, font=("Arial", 10)).pack(anchor=tk.W)
+            
+            # System Info
+            system_frame = ttk.LabelFrame(main_frame, text="System Information", padding=10)
+            system_frame.pack(fill=tk.X, pady=(0, 10))
+            
+            import platform
+            import sys
+            system_info = f"""Python Version: {sys.version.split()[0]}
+Platform: {platform.system()} {platform.release()}
+Architecture: {platform.machine()}
+Tkinter Version: {tk.TkVersion}"""
+            
+            ttk.Label(system_frame, text=system_info, font=("Arial", 10)).pack(anchor=tk.W)
+            
+            # Close button
+            close_button = ttk.Button(main_frame, text="Close", 
+                                    command=info_window.destroy)
+            close_button.pack(pady=(20, 0))
+            
+            # Focus on the window
+            info_window.focus_set()
+            
+            self.logger.info("Opened Info window")
+            
+        except Exception as e:
+            self.logger.error(f"Error showing info window: {e}")
+            import tkinter.messagebox as msgbox
+            msgbox.showerror("Error", f"Failed to open info window: {e}")
+    
+    def _save_settings(self, window, settings):
+        """Save settings and close window"""
+        try:
+            import json
+            import os
+            
+            # Create config directory if it doesn't exist
+            config_dir = os.path.join(os.path.dirname(__file__), '..', 'config')
+            os.makedirs(config_dir, exist_ok=True)
+            
+            # Save settings to config file
+            config_file = os.path.join(config_dir, 'settings.json')
+            with open(config_file, 'w') as f:
+                json.dump(settings, f, indent=2)
+            
+            self.logger.info(f"Settings saved to {config_file}: {settings}")
+            import tkinter.messagebox as msgbox
+            msgbox.showinfo("Success", "Settings saved successfully!")
+            window.destroy()
+        except Exception as e:
+            self.logger.error(f"Error saving settings: {e}")
+            import tkinter.messagebox as msgbox
+            msgbox.showerror("Error", f"Failed to save settings: {e}")
+    
+    def _load_settings(self):
+        """Load settings from config file"""
+        try:
+            import json
+            import os
+            
+            config_file = os.path.join(os.path.dirname(__file__), '..', 'config', 'settings.json')
+            
+            if os.path.exists(config_file):
+                with open(config_file, 'r') as f:
+                    settings = json.load(f)
+                self.logger.info(f"Settings loaded from {config_file}: {settings}")
+                return settings
+            else:
+                # Return default settings
+                default_settings = {
+                    'refresh_interval': '1',
+                    'max_candles': '500',
+                    'lot_size': '75',
+                    'order_type': 'MARKET'
+                }
+                self.logger.info("No settings file found, using defaults")
+                return default_settings
+        except Exception as e:
+            self.logger.error(f"Error loading settings: {e}")
+            # Return default settings on error
+            return {
+                'refresh_interval': '1',
+                'max_candles': '500',
+                'lot_size': '75',
+                'order_type': 'MARKET'
+            }
+    
+    def _populate_trade_book(self):
+        """Populate trade book with data from trades.db database"""
+        try:
+            from trade_database import TradeDatabase
+            from trade_models import TradeStatus
+            
+            # Initialize database connection
+            db = TradeDatabase("trades.db")
+            
+            # Get open trades from database
+            open_trades = db.get_open_trades()
+            
+            # Populate open trades tree
+            for trade in open_trades:
+                # Calculate total P&L for the trade
+                total_pnl = sum(leg.profit or 0 for leg in trade.legs)
+                pnl_str = f"₹{total_pnl:,.0f}" if total_pnl != 0 else "₹0"
+                
+                # Insert main trade
+                trade_item = self.open_tree.insert("", "end", 
+                    text=f"{trade.strategy_name} - {trade.trade_id}",
+                    values=(trade.trade_id, trade.strategy_name, trade.status.value, 
+                           trade.created_timestamp.strftime("%Y-%m-%d %H:%M"), pnl_str, trade.notes or ""),
+                    open=False)
+                
+                # Insert trade legs
+                for i, leg in enumerate(trade.legs, 1):
+                    leg_text = f"Leg {i}: {leg.position_type.value} {leg.option_type.value} {leg.strike_price:.0f}"
+                    
+                    # Format entry and exit prices
+                    entry_price = f"₹{leg.entry_price:.2f}" if leg.entry_price else "₹0"
+                    exit_price = f"₹{leg.exit_price:.2f}" if leg.exit_price else "₹0"
+                    pnl = f"₹{leg.profit:.0f}" if leg.profit is not None else "₹0"
+                    
+                    leg_values = ("", "", "", "", "", f"Entry: {entry_price} | Exit: {exit_price} | P&L: {pnl} | Qty: {leg.quantity} | {leg.instrument}")
+                    self.open_tree.insert(trade_item, "end", text=leg_text, values=leg_values)
+            
+            # Get closed trades from database
+            closed_trades = [trade for trade in db.get_all_trades() if trade.status == TradeStatus.CLOSED]
+            
+            # Populate closed trades tree
+            for trade in closed_trades:
+                # Calculate total P&L for the trade
+                total_pnl = sum(leg.profit or 0 for leg in trade.legs)
+                pnl_str = f"₹{total_pnl:,.0f}" if total_pnl != 0 else "₹0"
+                
+                # Find the latest exit timestamp from legs
+                latest_exit = None
+                for leg in trade.legs:
+                    if leg.exit_timestamp:
+                        if latest_exit is None or leg.exit_timestamp > latest_exit:
+                            latest_exit = leg.exit_timestamp
+                
+                closed_time = latest_exit.strftime("%Y-%m-%d %H:%M") if latest_exit else "Unknown"
+                
+                # Insert main trade
+                trade_item = self.closed_tree.insert("", "end", 
+                    text=f"{trade.strategy_name} - {trade.trade_id}",
+                    values=(trade.trade_id, trade.strategy_name, trade.status.value, 
+                           trade.created_timestamp.strftime("%Y-%m-%d %H:%M"), closed_time, pnl_str, trade.notes or ""),
+                    open=False)
+                
+                # Insert trade legs
+                for i, leg in enumerate(trade.legs, 1):
+                    leg_text = f"Leg {i}: {leg.position_type.value} {leg.option_type.value} {leg.strike_price:.0f}"
+                    
+                    # Format entry and exit prices
+                    entry_price = f"₹{leg.entry_price:.2f}" if leg.entry_price else "₹0"
+                    exit_price = f"₹{leg.exit_price:.2f}" if leg.exit_price else "₹0"
+                    pnl = f"₹{leg.profit:.0f}" if leg.profit is not None else "₹0"
+                    
+                    leg_values = ("", "", "", "", "", "", f"Entry: {entry_price} | Exit: {exit_price} | P&L: {pnl} | Qty: {leg.quantity} | {leg.instrument}")
+                    self.closed_tree.insert(trade_item, "end", text=leg_text, values=leg_values)
+            
+            self.logger.info(f"Trade book populated with {len(open_trades)} open trades and {len(closed_trades)} closed trades from database")
+            
+        except Exception as e:
+            self.logger.error(f"Error populating trade book from database: {e}")
+            # Fallback to empty trees if database is not available
+            self.logger.info("Using empty trade book as fallback")
+    
+    def _refresh_trade_book_tabs(self):
+        """Refresh trade book data for both tabs from database"""
+        try:
+            # Clear existing data
+            for item in self.open_tree.get_children():
+                self.open_tree.delete(item)
+            
+            for item in self.closed_tree.get_children():
+                self.closed_tree.delete(item)
+            
+            # Repopulate with fresh data from database
+            self._populate_trade_book()
+            
+            self.logger.info("Trade book tabs refreshed from database")
+        except Exception as e:
+            self.logger.error(f"Error refreshing trade book tabs: {e}")
+    
+    def _refresh_trade_book_after_execution(self):
+        """Refresh Trade Book after trade execution (if Trade Book window is open)"""
+        try:
+            # Check if Trade Book trees exist (indicating the window is open)
+            if hasattr(self, 'open_tree') and hasattr(self, 'closed_tree'):
+                self.logger.info("Refreshing Trade Book after trade execution")
+                self._refresh_trade_book_tabs()
+            else:
+                self.logger.info("Trade Book window not open, skipping refresh")
+        except Exception as e:
+            self.logger.error(f"Error refreshing Trade Book after execution: {e}")
+    
+    def _on_tree_double_click(self, event):
+        """Handle double-click on trade tree items"""
+        try:
+            # Get the clicked item
+            item = event.widget.selection()[0] if event.widget.selection() else None
+            if not item:
+                return
+            
+            # Get the tree type (open or closed)
+            tree_type = getattr(event.widget, 'leg_tree_type', 'unknown')
+            
+            # Check if it's a leg item (has a parent)
+            parent = event.widget.parent(item)
+            if parent:  # This is a leg item
+                self._show_leg_details_window(item, parent, tree_type, event.widget)
+            else:  # This is a trade item
+                self.logger.info(f"Double-clicked on trade item: {event.widget.item(item, 'text')}")
+                
+        except Exception as e:
+            self.logger.error(f"Error handling tree double-click: {e}")
+    
+    def _show_leg_details_window(self, leg_item, trade_item, tree_type, tree_widget):
+        """Show detailed leg information window"""
+        try:
+            from trade_database import TradeDatabase
+            from trade_models import TradeStatus
+            from datetime import datetime
+            
+            # Get leg information from the tree
+            leg_text = tree_widget.item(leg_item, 'text')
+            leg_values = tree_widget.item(leg_item, 'values')
+            
+            # Get trade information
+            trade_text = tree_widget.item(trade_item, 'text')
+            trade_values = tree_widget.item(trade_item, 'values')
+            trade_id = trade_values[0]  # Trade ID is first column
+            
+            # Create leg details window
+            leg_window = tk.Toplevel(self.root)
+            leg_window.title(f"Leg Details - {trade_id}")
+            leg_window.geometry("650x650")
+            leg_window.resizable(True, True)
+            
+            # Ensure window appears on top and is properly focused
+            leg_window.lift()
+            leg_window.attributes('-topmost', True)
+            leg_window.focus_force()
+            
+            # Make window modal (with error handling)
+            try:
+                leg_window.transient(self.root)
+                leg_window.grab_set()
+            except tk.TclError:
+                # If grab fails, just make it transient
+                leg_window.transient(self.root)
+            
+            # Remove topmost after a short delay to allow proper modal behavior
+            leg_window.after(100, lambda: leg_window.attributes('-topmost', False))
+            
+            # Main frame
+            main_frame = ttk.Frame(leg_window)
+            main_frame.pack(fill=tk.BOTH, expand=True, padx=20, pady=20)
+            
+            # Title
+            title_label = ttk.Label(main_frame, text=f"Trade Leg Details", 
+                                  font=("Arial", 16, "bold"))
+            title_label.pack(pady=(0, 20))
+            
+            # Trade info frame
+            trade_info_frame = ttk.LabelFrame(main_frame, text="Trade Information", padding=10)
+            trade_info_frame.pack(fill=tk.X, pady=(0, 15))
+            
+            trade_info_text = f"Trade ID: {trade_id}\n"
+            trade_info_text += f"Strategy: {trade_values[1]}\n"
+            trade_info_text += f"Status: {trade_values[2]}\n"
+            trade_info_text += f"Created: {trade_values[3]}"
+            
+            trade_info_label = ttk.Label(trade_info_frame, text=trade_info_text, 
+                                       font=("Arial", 10))
+            trade_info_label.pack(anchor=tk.W)
+            
+            # Leg details frame
+            leg_details_frame = ttk.LabelFrame(main_frame, text="Leg Details", padding=10)
+            leg_details_frame.pack(fill=tk.BOTH, expand=True, pady=(0, 15))
+            
+            # Parse leg information from the tree display
+            leg_info_text = f"Leg: {leg_text}\n"
+            leg_info_text += f"Details: {leg_values[5] if len(leg_values) > 5 else 'N/A'}\n"
+            
+            # Try to get more detailed information from database
+            try:
+                db = TradeDatabase("trades.db")
+                trade = db.get_trade(trade_id)
+                if trade and trade.legs:
+                    # Find the matching leg
+                    leg_index = None
+                    for i, leg in enumerate(trade.legs):
+                        if f"Leg {i+1}:" in leg_text:
+                            leg_index = i
+                            break
+                    
+                    if leg_index is not None:
+                        leg = trade.legs[leg_index]
+                        leg_info_text = f"Leg {leg_index + 1}: {leg.position_type.value} {leg.option_type.value} {leg.strike_price:.0f}\n"
+                        leg_info_text += f"Instrument: {leg.instrument}\n"
+                        leg_info_text += f"Instrument Name: {leg.instrument_name}\n"
+                        leg_info_text += f"Position: {leg.position_type.value}\n"
+                        leg_info_text += f"Option Type: {leg.option_type.value}\n"
+                        leg_info_text += f"Strike Price: ₹{leg.strike_price:.0f}\n"
+                        leg_info_text += f"Quantity: {leg.quantity}\n"
+                        leg_info_text += f"Entry Price: ₹{leg.entry_price:.2f}\n"
+                        leg_info_text += f"Entry Time: {leg.entry_timestamp.strftime('%Y-%m-%d %H:%M:%S')}\n"
+                        
+                        if leg.exit_price is not None:
+                            leg_info_text += f"Exit Price: ₹{leg.exit_price:.2f}\n"
+                            leg_info_text += f"Exit Time: {leg.exit_timestamp.strftime('%Y-%m-%d %H:%M:%S') if leg.exit_timestamp else 'N/A'}\n"
+                        else:
+                            leg_info_text += f"Exit Price: Not exited\n"
+                            leg_info_text += f"Exit Time: Not exited\n"
+                        
+                        if leg.profit is not None:
+                            leg_info_text += f"Profit/Loss: ₹{leg.profit:.2f}\n"
+                        else:
+                            leg_info_text += f"Profit/Loss: Not calculated\n"
+                            
+            except Exception as e:
+                self.logger.error(f"Error fetching leg details from database: {e}")
+                leg_info_text += f"Error fetching detailed information: {e}\n"
+            
+            # Create text widget for leg details
+            leg_text_widget = tk.Text(leg_details_frame, height=12, width=70, 
+                                    font=("Courier", 10), wrap=tk.WORD)
+            leg_text_widget.pack(fill=tk.BOTH, expand=True)
+            leg_text_widget.insert(tk.END, leg_info_text)
+            leg_text_widget.config(state=tk.DISABLED)
+            
+            # Add scrollbar for text widget
+            leg_scrollbar = ttk.Scrollbar(leg_details_frame, orient=tk.VERTICAL, 
+                                        command=leg_text_widget.yview)
+            leg_text_widget.configure(yscrollcommand=leg_scrollbar.set)
+            leg_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            # Exit trade section (only for open trades)
+            if tree_type == "open":
+                exit_frame = ttk.LabelFrame(main_frame, text="Exit Trade", padding=10)
+                exit_frame.pack(fill=tk.X, pady=(0, 15))
+                
+                # Exit price input
+                price_frame = ttk.Frame(exit_frame)
+                price_frame.pack(fill=tk.X, pady=(0, 10))
+                
+                ttk.Label(price_frame, text="Exit Price (₹):").pack(side=tk.LEFT)
+                exit_price_var = tk.StringVar()
+                exit_price_entry = ttk.Entry(price_frame, textvariable=exit_price_var, width=15)
+                exit_price_entry.pack(side=tk.LEFT, padx=(10, 0))
+                
+                # Exit button
+                def exit_trade_leg():
+                    try:
+                        exit_price = float(exit_price_var.get())
+                        if exit_price <= 0:
+                            import tkinter.messagebox as msgbox
+                            msgbox.showerror("Error", "Exit price must be greater than 0")
+                            return
+                        
+                        # Update the leg in database
+                        db = TradeDatabase("trades.db")
+                        trade = db.get_trade(trade_id)
+                        if trade and trade.legs:
+                            # Find the matching leg
+                            leg_index = None
+                            for i, leg in enumerate(trade.legs):
+                                if f"Leg {i+1}:" in leg_text:
+                                    leg_index = i
+                                    break
+                            
+                            if leg_index is not None:
+                                leg = trade.legs[leg_index]
+                                leg.exit_price = exit_price
+                                leg.exit_timestamp = datetime.now()
+                                
+                                # Calculate profit/loss
+                                if leg.position_type.value == 'LONG':
+                                    leg.profit = (exit_price - leg.entry_price) * leg.quantity
+                                else:  # SHORT
+                                    leg.profit = (leg.entry_price - exit_price) * leg.quantity
+                                
+                                # Update trade in database
+                                if db.update_trade(trade):
+                                    import tkinter.messagebox as msgbox
+                                    msgbox.showinfo("Success", f"Leg {leg_index + 1} exited successfully!\nExit Price: ₹{exit_price:.2f}\nP&L: ₹{leg.profit:.2f}")
+                                    
+                                    # Refresh trade book
+                                    self._refresh_trade_book_tabs()
+                                    
+                                    # Refresh chart display to show updated open trades
+                                    self._refresh_chart_display()
+                                    
+                                    # Close leg details window
+                                    leg_window.destroy()
+                                else:
+                                    import tkinter.messagebox as msgbox
+                                    msgbox.showerror("Error", "Failed to update trade in database")
+                            else:
+                                import tkinter.messagebox as msgbox
+                                msgbox.showerror("Error", "Leg not found in trade")
+                        else:
+                            import tkinter.messagebox as msgbox
+                            msgbox.showerror("Error", "Trade not found in database")
+                            
+                    except ValueError:
+                        import tkinter.messagebox as msgbox
+                        msgbox.showerror("Error", "Please enter a valid exit price")
+                    except Exception as e:
+                        self.logger.error(f"Error exiting trade leg: {e}")
+                        import tkinter.messagebox as msgbox
+                        msgbox.showerror("Error", f"Failed to exit trade leg: {e}")
+                
+                exit_button = ttk.Button(exit_frame, text="Exit Trade Leg", 
+                                       command=exit_trade_leg)
+                exit_button.pack(side=tk.LEFT, padx=(0, 10))
+                
+                # Help text
+                help_label = ttk.Label(exit_frame, 
+                                     text="Enter the exit price and click 'Exit Trade Leg' to close this position",
+                                     font=("Arial", 9), foreground="gray")
+                help_label.pack(side=tk.LEFT)
+            else:
+                # Show message for closed trades
+                closed_info_frame = ttk.LabelFrame(main_frame, text="Trade Status", padding=10)
+                closed_info_frame.pack(fill=tk.X, pady=(0, 15))
+                
+                closed_info_label = ttk.Label(closed_info_frame, 
+                                           text="This is a closed trade leg. Exit functionality is not available.",
+                                           font=("Arial", 10), foreground="gray")
+                closed_info_label.pack()
+            
+            # Close button
+            close_button = ttk.Button(main_frame, text="Close", 
+                                    command=leg_window.destroy)
+            close_button.pack(pady=(10, 0))
+            
+            # Focus on the window
+            leg_window.focus_set()
+            
+            self.logger.info(f"Opened leg details window for {trade_id}")
+            
+        except Exception as e:
+            self.logger.error(f"Error showing leg details window: {e}")
+            import tkinter.messagebox as msgbox
+            msgbox.showerror("Error", f"Failed to open leg details window: {e}")
+    
+    def _refresh_trade_book(self, tree):
+        """Refresh trade book data (legacy method for compatibility)"""
+        try:
+            # Clear existing data
+            for item in tree.get_children():
+                tree.delete(item)
+            
+            # Add refreshed data (in real implementation, this would fetch from database)
+            sample_trades = [
+                ("IC_20240116_120000", "Iron Condor", "Open", "2024-01-16 12:00", "₹0", "NIFTY 24000/24500/25000/25500"),
+                ("IC_20240116_110000", "Iron Condor", "Closed", "2024-01-16 11:00", "₹1,250", "NIFTY 23900/24400/24900/25400"),
+                ("ST_20240116_100000", "Straddle", "Open", "2024-01-16 10:00", "₹-150", "NIFTY 25000"),
+            ]
+            
+            for trade in sample_trades:
+                tree.insert("", "end", values=trade)
+            
+            self.logger.info("Trade book refreshed")
+        except Exception as e:
+            self.logger.error(f"Error refreshing trade book: {e}")
+    
+    def set_agent(self, agent):
+        """Set the current trading agent for order placement"""
+        self._current_agent = agent
+        self.logger.info(f"Trading agent set: {type(agent).__name__}")
         
     def run(self):
         """Run the application"""

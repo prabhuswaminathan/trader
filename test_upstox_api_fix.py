@@ -89,11 +89,9 @@ def test_upstox_intraday_api_fix():
                 from datetime import datetime
                 data = agent.get_ohlc_intraday_data(
                     "NSE_INDEX|Nifty 50", 
-                    "1minute",
-                    start_time=datetime.now(),
-                    end_time=datetime.now()
+                    "1minute"
                 )
-                logger.info("✅ Method accepts start_time/end_time parameters (for compatibility)")
+                logger.info("✅ Method works without start_time/end_time parameters")
             except Exception as e:
                 logger.info(f"✅ Error with parameters (expected): {e}")
             

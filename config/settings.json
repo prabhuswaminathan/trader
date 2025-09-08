@@ -1,0 +1,6 @@
+{
+  "refresh_interval": "1",
+  "max_candles": "500",
+  "lot_size": "75",
+  "order_type": "MARKET"
+}

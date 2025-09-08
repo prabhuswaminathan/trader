@@ -22,11 +22,13 @@ class DataWarehouse:
         # Thread lock for data operations
         self.lock = threading.Lock()
         
-        # In-memory storage for active data
-        self.intraday_data: Dict[str, pd.DataFrame] = {}
+        # In-memory storage for different data sources
+        self.historical_data: Dict[str, pd.DataFrame] = {}  # Historical API data
+        self.intraday_data: Dict[str, pd.DataFrame] = {}    # Intraday API data
+        self.live_feed_data: Dict[str, pd.DataFrame] = {}   # Live feed data
         
-        # Latest price storage for P&L calculations
-        self.latest_prices: Dict[str, Dict] = {}  # {instrument: {price, timestamp, volume}}
+        # Latest price storage for P&L calculations (from all sources)
+        self.latest_prices: Dict[str, Dict] = {}  # {instrument: {price, timestamp, volume, source}}
         
         # Configuration
         self.default_interval_minutes = 5
@@ -71,77 +73,41 @@ class DataWarehouse:
         minutes = (timestamp.minute // interval_minutes) * interval_minutes
         return timestamp.replace(minute=minutes, second=0, microsecond=0)
     
-    def consolidate_1min_to_5min(self, instrument: str, one_min_data: List[Dict]) -> List[Dict]:
+    def store_historical_data(self, instrument: str, ohlc_data: List[Dict]):
         """
-        Consolidate 1-minute OHLC data into 5-minute buckets
+        Store historical OHLC data
         
         Args:
             instrument (str): Instrument identifier
-            one_min_data (List[Dict]): List of 1-minute OHLC data
-            
-        Returns:
-            List[Dict]: Consolidated 5-minute OHLC data
+            ohlc_data (List[Dict]): List of OHLC data
         """
-        if not one_min_data:
-            return []
-        
-        # Group data by 5-minute intervals
-        buckets = {}
-        
-        for candle in one_min_data:
-            # Parse timestamp
-            if isinstance(candle.get('timestamp'), str):
-                timestamp = pd.to_datetime(candle['timestamp'])
-            else:
-                timestamp = candle.get('timestamp', datetime.now())
-            
-            # Round to 5-minute boundary
-            bucket_time = self._round_to_interval(timestamp, 5)
-            
-            if bucket_time not in buckets:
-                buckets[bucket_time] = []
-            
-            buckets[bucket_time].append(candle)
-        
-        # Consolidate each bucket
-        consolidated_data = []
-        
-        for bucket_time, candles in buckets.items():
-            if not candles:
-                continue
-            
-            # Sort candles by timestamp within the bucket
-            candles.sort(key=lambda x: x.get('timestamp', datetime.now()))
-            
-            # Extract OHLCV values
-            opens = [float(c.get('open', 0)) for c in candles if c.get('open') is not None]
-            highs = [float(c.get('high', 0)) for c in candles if c.get('high') is not None]
-            lows = [float(c.get('low', 0)) for c in candles if c.get('low') is not None]
-            closes = [float(c.get('close', 0)) for c in candles if c.get('close') is not None]
-            volumes = [float(c.get('volume', 0)) for c in candles if c.get('volume') is not None]
-            
-            if not opens or not highs or not lows or not closes:
-                continue
-            
-            # Create consolidated candle
-            consolidated_candle = {
-                'timestamp': bucket_time,
-                'open': opens[0],  # First open in the bucket
-                'high': max(highs),  # Highest high in the bucket
-                'low': min(lows),    # Lowest low in the bucket
-                'close': closes[-1], # Last close in the bucket
-                'volume': sum(volumes) if volumes else 0  # Sum of volumes
-            }
-            
-            consolidated_data.append(consolidated_candle)
-        
-        # Sort by timestamp
-        consolidated_data.sort(key=lambda x: x['timestamp'])
-        
-        self.logger.debug(f"Consolidated {len(one_min_data)} 1-min candles into {len(consolidated_data)} 5-min candles for {instrument}")
-        
-        return consolidated_data
-    
+        with self.lock:
+            try:
+                # Convert to DataFrame
+                df = pd.DataFrame(ohlc_data)
+                if df.empty:
+                    return
+                
+                # Set timestamp as index
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                df.set_index('timestamp', inplace=True)
+                
+                # Store historical data separately (don't combine with existing)
+                combined_df = df
+                
+                # Keep only recent data in memory
+                if len(combined_df) > self.max_candles_in_memory:
+                    combined_df = combined_df.tail(self.max_candles_in_memory)
+                
+                # Store in memory and file
+                self.historical_data[instrument] = combined_df
+                self._save_data_to_file(instrument, 'historical', combined_df)
+                
+                self.logger.info(f"Stored {len(df)} historical candles for {instrument}")
+                
+            except Exception as e:
+                self.logger.error(f"Error storing historical data for {instrument}: {e}")
+
     def store_intraday_data(self, instrument: str, ohlc_data: List[Dict], interval_minutes: int = 5):
         """
         Store intraday OHLC data
@@ -162,16 +128,8 @@ class DataWarehouse:
                 df['timestamp'] = pd.to_datetime(df['timestamp'])
                 df.set_index('timestamp', inplace=True)
                 
-                # Load existing data
-                existing_df = self._load_data_from_file(instrument, 'intraday')
-                
-                if not existing_df.empty:
-                    # Combine with existing data
-                    combined_df = pd.concat([existing_df, df])
-                    # Remove duplicates and sort
-                    combined_df = combined_df[~combined_df.index.duplicated(keep='last')].sort_index()
-                else:
-                    combined_df = df
+                # Store intraday data separately (don't combine with existing)
+                combined_df = df
                 
                 # Keep only recent data in memory
                 if len(combined_df) > self.max_candles_in_memory:
@@ -185,6 +143,41 @@ class DataWarehouse:
                 
             except Exception as e:
                 self.logger.error(f"Error storing intraday data for {instrument}: {e}")
+
+    def store_live_feed_data(self, instrument: str, ohlc_data: List[Dict]):
+        """
+        Store live feed OHLC data
+        
+        Args:
+            instrument (str): Instrument identifier
+            ohlc_data (List[Dict]): List of OHLC data
+        """
+        with self.lock:
+            try:
+                # Convert to DataFrame
+                df = pd.DataFrame(ohlc_data)
+                if df.empty:
+                    return
+                
+                # Set timestamp as index
+                df['timestamp'] = pd.to_datetime(df['timestamp'])
+                df.set_index('timestamp', inplace=True)
+                
+                # Store live feed data separately (don't combine with existing)
+                combined_df = df
+                
+                # Keep only recent data in memory
+                if len(combined_df) > self.max_candles_in_memory:
+                    combined_df = combined_df.tail(self.max_candles_in_memory)
+                
+                # Store in memory and file
+                self.live_feed_data[instrument] = combined_df
+                self._save_data_to_file(instrument, 'live_feed', combined_df)
+                
+                self.logger.info(f"Stored {len(df)} live feed candles for {instrument}")
+                
+            except Exception as e:
+                self.logger.error(f"Error storing live feed data for {instrument}: {e}")
     
     
     def get_intraday_data(self, instrument: str, start_time: Optional[datetime] = None, 
@@ -229,11 +222,100 @@ class DataWarehouse:
             except Exception as e:
                 self.logger.error(f"Error getting intraday data for {instrument}: {e}")
                 return pd.DataFrame()
+
+    def get_historical_data(self, instrument: str, start_time: Optional[datetime] = None, 
+                           end_time: Optional[datetime] = None, limit: Optional[int] = None) -> pd.DataFrame:
+        """
+        Get historical OHLC data
+        
+        Args:
+            instrument (str): Instrument identifier
+            start_time (datetime, optional): Start time filter
+            end_time (datetime, optional): End time filter
+            limit (int, optional): Maximum number of records to return
+            
+        Returns:
+            pd.DataFrame: Historical OHLC data
+        """
+        with self.lock:
+            try:
+                # Load from memory first, then file if needed
+                if instrument in self.historical_data:
+                    df = self.historical_data[instrument].copy()
+                else:
+                    df = self._load_data_from_file(instrument, 'historical')
+                    if not df.empty:
+                        self.historical_data[instrument] = df
+                
+                if df.empty:
+                    return df
+                
+                # Apply filters
+                if start_time:
+                    df = df[df.index >= start_time]
+                if end_time:
+                    df = df[df.index <= end_time]
+                
+                # Apply limit
+                if limit:
+                    df = df.tail(limit)
+                
+                return df
+                
+            except Exception as e:
+                self.logger.error(f"Error getting historical data for {instrument}: {e}")
+                return pd.DataFrame()
+
+    def get_live_feed_data(self, instrument: str, start_time: Optional[datetime] = None, 
+                          end_time: Optional[datetime] = None, limit: Optional[int] = None) -> pd.DataFrame:
+        """
+        Get live feed OHLC data
+        
+        Args:
+            instrument (str): Instrument identifier
+            start_time (datetime, optional): Start time filter
+            end_time (datetime, optional): End time filter
+            limit (int, optional): Maximum number of records to return
+            
+        Returns:
+            pd.DataFrame: Live feed OHLC data
+        """
+        with self.lock:
+            try:
+                # Load from memory first, then file if needed
+                if instrument in self.live_feed_data:
+                    df = self.live_feed_data[instrument].copy()
+                else:
+                    df = self._load_data_from_file(instrument, 'live_feed')
+                    if not df.empty:
+                        self.live_feed_data[instrument] = df
+                
+                if df.empty:
+                    return df
+                
+                # Apply filters
+                if start_time:
+                    df = df[df.index >= start_time]
+                if end_time:
+                    df = df[df.index <= end_time]
+                
+                # Apply limit
+                if limit:
+                    df = df.tail(limit)
+                
+                return df
+                
+            except Exception as e:
+                self.logger.error(f"Error getting live feed data for {instrument}: {e}")
+                return pd.DataFrame()
     
     
     def get_latest_price(self, instrument: str) -> Optional[float]:
         """
-        Get the latest price for an instrument
+        Get the latest price for an instrument with priority order:
+        1. Live Feed data
+        2. Intraday data  
+        3. Historical data
         
         Args:
             instrument (str): Instrument identifier
@@ -242,35 +324,108 @@ class DataWarehouse:
             float: Latest close price, or None if not available
         """
         try:
-            # Try latest_prices first (most recent data)
+            # Define priority order (lower number = higher priority)
+            priority_order = {
+                'live_feed': 1,
+                'intraday': 2, 
+                'historical': 3,
+                'unknown': 4
+            }
+            
+            # Collect all available prices with their sources
+            available_prices = []
+            
+            # Check latest_prices (most recent data from any source)
             if instrument in self.latest_prices:
                 price_data = self.latest_prices[instrument]
-                self.logger.debug(f"Retrieved latest price from latest_prices: {price_data['price']}")
-                return float(price_data['price'])
-            self.logger.warning(f"No latest price available for {instrument}")
-            return None
+                source = price_data.get('source', 'unknown')
+                price = float(price_data['price'])
+                available_prices.append((price, source, 'latest_prices'))
+            
+            # Check live feed data
+            if instrument in self.live_feed_data and not self.live_feed_data[instrument].empty:
+                latest_candle = self.live_feed_data[instrument].iloc[0]
+                price = float(latest_candle['close'])
+                available_prices.append((price, 'live_feed', 'live_feed_data'))
+            
+            # Check intraday data
+            if instrument in self.intraday_data and not self.intraday_data[instrument].empty:
+                latest_candle = self.intraday_data[instrument].iloc[0]
+                price = float(latest_candle['close'])
+                available_prices.append((price, 'intraday', 'intraday_data'))
+            
+            # Check historical data
+            if instrument in self.historical_data and not self.historical_data[instrument].empty:
+                latest_candle = self.historical_data[instrument].iloc[0]
+                price = float(latest_candle['close'])
+                available_prices.append((price, 'historical', 'historical_data'))
+            
+            if not available_prices:
+                self.logger.warning(f"No price available for {instrument} from any source")
+                return None
+            
+            # Sort by priority (lower priority number = higher priority)
+            available_prices.sort(key=lambda x: priority_order.get(x[1], 999))
+            
+            # Return the highest priority price
+            selected_price, selected_source, selected_location = available_prices[0]
+            self.logger.debug(f"Selected price {selected_price} from {selected_source} ({selected_location})")
+            
+            return selected_price
             
         except Exception as e:
             self.logger.error(f"Error getting latest price for {instrument}: {e}")
             return None
     
-    def store_latest_price(self, instrument: str, price: float, volume: float = 0.0) -> None:
+    def store_latest_price(self, instrument: str, price: float, volume: float = 0.0, source: str = 'unknown') -> None:
         """
         Store the latest price for an instrument (for P&L calculations)
+        Only stores if the new source has higher or equal priority than existing data
         
         Args:
             instrument (str): Instrument identifier
             price (float): Latest price
             volume (float): Latest volume (optional)
+            source (str): Data source ('historical', 'intraday', 'live_feed')
         """
         try:
             with self.lock:
-                self.latest_prices[instrument] = {
-                    'price': price,
-                    'volume': volume,
-                    'timestamp': datetime.now()
+                # Define priority order (lower number = higher priority)
+                priority_order = {
+                    'live_feed': 1,
+                    'intraday': 2, 
+                    'historical': 3,
+                    'unknown': 4
                 }
-                self.logger.debug(f"Stored latest price for {instrument}: {price}")
+                
+                # Check if we should store this price based on priority
+                should_store = True
+                if instrument in self.latest_prices:
+                    existing_source = self.latest_prices[instrument].get('source', 'unknown')
+                    existing_priority = priority_order.get(existing_source, 999)
+                    new_priority = priority_order.get(source, 999)
+                    
+                    if new_priority > existing_priority:
+                        # New source has lower priority, don't overwrite
+                        should_store = False
+                        self.logger.debug(f"Skipping {source} price {price} for {instrument} - existing {existing_source} has higher priority")
+                    elif new_priority == existing_priority:
+                        # Same priority, update with newer data
+                        should_store = True
+                        self.logger.debug(f"Updating {source} price for {instrument} from {self.latest_prices[instrument]['price']} to {price}")
+                    else:
+                        # New source has higher priority, overwrite
+                        should_store = True
+                        self.logger.debug(f"Overwriting {existing_source} price with higher priority {source} price for {instrument}")
+                
+                if should_store:
+                    self.latest_prices[instrument] = {
+                        'price': price,
+                        'volume': volume,
+                        'timestamp': datetime.now(),
+                        'source': source
+                    }
+                    self.logger.debug(f"Stored latest price for {instrument}: {price} (source: {source})")
                 
         except Exception as e:
             self.logger.error(f"Error storing latest price for {instrument}: {e}")
@@ -329,13 +484,16 @@ class DataWarehouse:
         
         Args:
             instrument (str, optional): Instrument to clear. If None, clears all.
-            data_type (str, optional): 'intraday', 'historical', or None for both.
+            data_type (str, optional): 'intraday', 'historical', 'live_feed', or None for all.
         """
         with self.lock:
             try:
                 if instrument is None:
                     # Clear all data
+                    self.historical_data.clear()
                     self.intraday_data.clear()
+                    self.live_feed_data.clear()
+                    self.latest_prices.clear()
                     self.logger.info("Cleared all data")
                 else:
                     # Clear specific instrument
@@ -359,8 +517,13 @@ class DataWarehouse:
             Dict: Summary of data warehouse contents
         """
         summary = {
+            'historical_instruments': list(self.historical_data.keys()),
+            'total_historical_candles': sum(len(df) for df in self.historical_data.values()),
             'intraday_instruments': list(self.intraday_data.keys()),
-            'total_intraday_candles': sum(len(df) for df in self.intraday_data.values())
+            'total_intraday_candles': sum(len(df) for df in self.intraday_data.values()),
+            'live_feed_instruments': list(self.live_feed_data.keys()),
+            'total_live_feed_candles': sum(len(df) for df in self.live_feed_data.values()),
+            'latest_prices': len(self.latest_prices)
         }
         
         return summary

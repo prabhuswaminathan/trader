@@ -2,7 +2,6 @@
 """
 Main application for live market data visualization with flexible broker agent switching.
 """
-
 import logging
 import time
 import threading
@@ -15,10 +14,11 @@ from chart_visualizer import LiveChartVisualizer, TkinterChartApp
 from broker_agent import BrokerAgent
 from datawarehouse import datawarehouse
 from strategy_manager import StrategyManager
+from trade_utils import Utils
 
 # Configure logging
 logging.basicConfig(
-    level=logging.ERROR,
+    level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger("MainApp")
@@ -45,13 +45,15 @@ class MarketDataApp:
         self.market_start_time = dt_time(9, 15)  # 9:15 AM
         self.market_end_time = dt_time(15, 30)   # 3:30 PM
         
-        # Configuration - Only Nifty 50
+        # Configuration - Nifty 50 and India VIX
         self.instruments = {
             "upstox": {
-                "NSE_INDEX|Nifty 50": "Nifty 50"
+                "NSE_INDEX|Nifty 50": "Nifty 50",
+                "NSE_INDEX|India VIX": "India VIX"
             },
             "kite": {
-                256265: "Nifty 50"  # NSE:NIFTY 50
+                256265: "Nifty 50",  # NSE:NIFTY 50
+                260105: "India VIX"  # NSE:INDIA VIX
             }
         }
         
@@ -121,7 +123,7 @@ class MarketDataApp:
         """Initialize the chart visualizer"""
         try:
             self.chart_visualizer = LiveChartVisualizer(
-                title=f"Nifty 50 Live Data - {self.broker_type.upper()}",
+                title=f"Live Market Data - {self.broker_type.upper()}",
                 max_candles=500  # Increased to handle full intraday dataset (288+ candles)
             )
                         
@@ -226,14 +228,24 @@ class MarketDataApp:
             else:
                 logger.warning(f"Unknown broker type: {self.broker_type}")
             
+            # Update chart visualizer with live data
+            if self.chart_visualizer:
+                # Get the primary instrument
+                primary_instrument = list(self.instruments[self.broker_type].keys())[0]
+                # Get the latest price from datawarehouse
+                latest_price = datawarehouse.get_latest_price(primary_instrument)
+                if latest_price:
+                    # Update the chart visualizer
+                    self.chart_visualizer.update_data(primary_instrument, {'price': latest_price, 'volume': 0})
+            
         except Exception as e:
             logger.error(f"Error processing live data: {e}")
             logger.error(f"Data type: {type(data)}, Data: {data}")
     
-    def _load_historical_data(self):
+    def _load_historical_data(self, start_date: str, end_date: str):
         """Load historical data for context and better Y-axis scaling"""
         try:
-            # Get the primary instrument (Nifty 50)
+            # Get the primary instrument (first in the list)
             primary_instrument = list(self.instruments[self.broker_type].keys())[0]
             
             # Fetch fresh historical data from broker (no caching)
@@ -242,7 +254,8 @@ class MarketDataApp:
                 primary_instrument,     
                 unit="minutes",
                 interval=5,
-                days=5
+                from_date=start_date,
+                end_date=end_date
             )
             
             # Update datawarehouse with latest price from historical data
@@ -251,8 +264,11 @@ class MarketDataApp:
                 latest_price = latest_candle.get('close', latest_candle.get('price', 0))
                 latest_volume = latest_candle.get('volume', 0)
                 
+                # Store historical data in datawarehouse
+                datawarehouse.store_historical_data(primary_instrument, historical_data)
+                
                 # Store latest price in datawarehouse for P&L calculations
-                datawarehouse.store_latest_price(primary_instrument, latest_price, latest_volume)
+                datawarehouse.store_latest_price(primary_instrument, latest_price, latest_volume, 'historical')
                 logger.info(f"Updated datawarehouse with latest price from historical data: {primary_instrument} = {latest_price}")
             
             return historical_data
@@ -262,7 +278,7 @@ class MarketDataApp:
     def fetch_and_display_historical_data(self):
         """Fetch historical data from broker and display in chart"""
         try:
-            # Get the primary instrument (Nifty 50)
+            # Get the primary instrument (first in the list)
             primary_instrument = list(self.instruments[self.broker_type].keys())[0]
             
             logger.info(f"Fetching historical data for {primary_instrument}...")
@@ -278,13 +294,15 @@ class MarketDataApp:
                 latest_price = latest_candle.get('close', latest_candle.get('price', 0))
                 latest_volume = latest_candle.get('volume', 0)
                 
+                # Store historical data in datawarehouse
+                datawarehouse.store_historical_data(primary_instrument, historical_data)
+                
                 # Store latest price in datawarehouse for P&L calculations
-                datawarehouse.store_latest_price(primary_instrument, latest_price, latest_volume)
+                datawarehouse.store_latest_price(primary_instrument, latest_price, latest_volume, 'historical')
                 logger.info(f"Stored latest price from historical data: {primary_instrument} = {latest_price}")
                 
-                # Store historical data directly in chart
-                self.chart_visualizer._store_historical_data(primary_instrument, historical_data)
-                logger.info(f"Displayed {len(historical_data)} historical candles in chart")
+                # Historical data is stored in datawarehouse only, not displayed in chart
+                logger.info(f"Stored {len(historical_data)} historical candles in datawarehouse (not displayed in chart)")
                 
                 return True
             else:
@@ -298,7 +316,7 @@ class MarketDataApp:
     def fetch_and_display_intraday_data(self):
         """Fetch intraday data from broker and display in chart"""
         try:
-            # Get the primary instrument (Nifty 50)
+            # Get the primary instrument (first in the list)
             primary_instrument = list(self.instruments[self.broker_type].keys())[0]
             
             logger.info(f"Fetching intraday data for {primary_instrument}...")
@@ -309,72 +327,51 @@ class MarketDataApp:
                 logger.error("No agent available for data fetching")
                 return False
             
-            # Fetch 1-minute intraday data from broker
-            logger.info(f"Calling get_ohlc_intraday_data with instrument: {primary_instrument}")
-            try:
-                intraday_data = self.agent.get_ohlc_intraday_data(
-                    primary_instrument, 
-                    interval="1minute",
-                    start_time=None,  # Will use default (last 24 hours)
-                    end_time=None
-                )
-                logger.info(f"get_ohlc_intraday_data returned: {len(intraday_data) if intraday_data else 0} candles")
-                
-                # Reset trading holiday flag if we successfully got data
-                self._is_trading_holiday = len(intraday_data) == 0
-                
-            except TradingHolidayException as e:
-                logger.warning(f"Trading holiday detected: {e}")
-                self._is_trading_holiday = True
-                
 
-            latest_price_index = -1
-            if self._is_trading_holiday:
-                intraday_data = self._load_historical_data()
-                latest_price_index = 0
+            data_fetched = True
+            if not Utils.isWeekend():
+                # Fetch 1-minute intraday data from broker
+                logger.info(f"Calling get_ohlc_intraday_data with instrument: {primary_instrument}")
+                try:
+                    intraday_data = self.agent.get_ohlc_intraday_data(
+                        primary_instrument, 
+                        interval="5"
+                    )
+                    logger.info(f"get_ohlc_intraday_data returned: {len(intraday_data) if intraday_data else 0} candles")
+                    data_fetched = len(intraday_data) > 0                    
+                except TradingHolidayException as e:
+                    logger.warning(f"Trading holiday detected: {e}")
+                    data_fetched = False
+            counter = 0
+            while not data_fetched and counter < 2:
+                logger.info("Weekend detected - fetching historical data")
+                if Utils.isWeekend():
+                    start_date = Utils.getPreviousFriday().strftime("%Y-%m-%d")
+                else:
+                    start_date = (datetime.now() - timedelta(days=1)) .strftime("%Y-%m-%d")
+                intraday_data = self._load_historical_data(start_date, start_date)
+                data_fetched = len(intraday_data) == 0  
+                counter += 1
             
             if intraday_data and len(intraday_data) > 0:
                 logger.info(f"Fetched {len(intraday_data)} candles from broker")
                 
                 # Store the latest price from the most recent candle for P&L calculations
-                latest_candle = intraday_data[latest_price_index]  # Get the most recent candle
+                latest_candle = intraday_data[0]  # Get the most recent candle
                 latest_price = latest_candle.get('close', latest_candle.get('price', 0))
                 latest_volume = latest_candle.get('volume', 0)
                 
+                # Store intraday data in datawarehouse
+                datawarehouse.store_intraday_data(primary_instrument, intraday_data)
+                
                 # Store latest price in datawarehouse for P&L calculations
-                datawarehouse.store_latest_price(primary_instrument, latest_price, latest_volume)
+                datawarehouse.store_latest_price(primary_instrument, latest_price, latest_volume, 'intraday')
                 logger.info(f"Stored latest price for P&L: {primary_instrument} = {latest_price}")
                 
-                # Store the data
-                # if self._is_trading_holiday:
-                    # Historical data is not stored - fetched fresh each time
-                    # logger.info(f"Fetched {len(intraday_data)} 5-minute historical candles for trading holiday")
-                # else:
-                    # Store as intraday data for normal trading
-                    # self.agent.store_ohlc_data(primary_instrument, intraday_data, "intraday", 1)
-                    # logger.info(f"Stored {len(intraday_data)} 1-minute candles for P&L calculations")
-                
-                # Display all the data in the chart
-                display_data = intraday_data
-                
-                
-                if self._is_trading_holiday:
-                    logger.info(f"Displayed {len(display_data)} 5-minute historical candles for trading holiday")
-                    # Store historical data directly in chart
-                    #get last 75 candles
-                    historical_ohlc_data = display_data[:75]
-                    historical_ohlc_data.sort(key=lambda x: x['timestamp'], reverse=True)
-                    self.chart_visualizer._store_historical_data(primary_instrument, historical_ohlc_data)
-                else:
-                    # Consolidate 1-minute data to 5-minute candles and display
-                    consolidated_data = self.chart_visualizer._consolidate_candles(display_data)
-                    logger.info(f"Consolidated {len(display_data)} 1-minute candles into {len(consolidated_data)} 5-minute candles")
-                    
-                    # Store consolidated data in chart
-                    self.chart_visualizer._store_historical_data(primary_instrument, consolidated_data)
-                    logger.info(f"Displayed all {len(consolidated_data)} intraday candles in chart (consolidated to 5-minute)")
-                
-                # Chart will be updated by animation loop, no need for force update
+                # Store intraday data in chart for display
+                if self.chart_visualizer:
+                    self.chart_visualizer._store_intraday_data(primary_instrument, intraday_data)
+                    logger.info(f"Stored {len(intraday_data)} intraday candles in chart for display")
                 
                 return True
             else:
@@ -389,7 +386,7 @@ class MarketDataApp:
             return False
     
     def _process_upstox_data(self, data):
-        """Process Upstox live data - simplified to store only latest price for P&L calculations"""
+        """Process Upstox live data - handle new response format with feeds object"""
         try:
             # Log the received data for debugging
             self._log_live_feed(f"Processing Upstox data: {type(data)} - {str(data)[:100]}...")
@@ -399,72 +396,70 @@ class MarketDataApp:
                 logger.warning("Received None data from Upstox")
                 return
             
-            # Upstox data comes as Protobuf messages, extract price information
-            data_str = str(data)
+            # Check if data contains "feeds" object
+            if not isinstance(data, dict) or 'feeds' not in data:
+                self._log_live_feed("No 'feeds' object found in response, skipping processing")
+                return
             
-            # Try to extract price information from the data using multiple     
-            import re
-            price = None
-            volume = 0
+            feeds = data.get('feeds', {})
+            if not feeds:
+                self._log_live_feed("Empty 'feeds' object, skipping processing")
+                return
             
-            # Try different price patterns
-            price_patterns = [
-                r'ltp[:\s=]*(\d+\.?\d*)',
-                r'last_price[:\s=]*(\d+\.?\d*)',
-                r'price[:\s=]*(\d+\.?\d*)',
-                r'close[:\s=]*(\d+\.?\d*)',
-                r'"last_price":\s*(\d+\.?\d*)',  # JSON format
-                r'last_price:\s*(\d+\.?\d*)',    # Protobuf format
-                r'ltp:\s*(\d+\.?\d*)',           # LTP format
-                r'(\d{4,6}\.?\d*)'  # Generic 4-6 digit number (for Nifty prices)
-            ]
+            self._log_live_feed(f"Processing {len(feeds)} feed entries")
             
-            for pattern in price_patterns:
-                price_match = re.search(pattern, data_str, re.IGNORECASE)
-                if price_match:
-                    try:
-                        price = float(price_match.group(1))
-                        self._log_live_feed(f"Extracted price: {price} using pattern: {pattern}")
-                        break
-                    except ValueError:
+            # Process each feed entry
+            for instrument_name, feed_data in feeds.items():
+                try:
+                    # Extract ltpc data
+                    ltpc = feed_data.get('ltpc', {})
+                    if not ltpc:
+                        self._log_live_feed(f"No 'ltpc' data for {instrument_name}, skipping")
                         continue
-            
-            # Try to extract volume
-            volume_patterns = [
-                r'volume[:\s=]*(\d+)',
-                r'vol[:\s=]*(\d+)',
-                r'"volume":\s*(\d+)'  # JSON format
-            ]
-            
-            for pattern in volume_patterns:
-                volume_match = re.search(pattern, data_str, re.IGNORECASE)
-                if volume_match:
-                    try:
-                        volume = int(volume_match.group(1))
-                        break
-                    except ValueError:
+                    
+                    # Extract price and change
+                    ltp = ltpc.get('ltp')
+                    cp = ltpc.get('cp')  # Change percentage
+                    ltt = ltpc.get('ltt')  # Last trade time
+                    
+                    if ltp is None:
+                        self._log_live_feed(f"No 'ltp' data for {instrument_name}, skipping")
                         continue
+                    
+                    # Convert to float
+                    try:
+                        price = float(ltp)
+                        volume = 0  # Volume not available in this format
+                        
+                        self._log_live_feed(f"Extracted from {instrument_name}: LTP={price}, CP={cp}, LTT={ltt}")
+                        
+                        # Map instrument name to our instrument key
+                        instrument_key = None
+                        
+                        # Try to match with existing instruments
+                        for key in self.instruments[self.broker_type].keys():
+                            if key.upper() in instrument_name.upper():
+                                instrument_key = key
+                                break
+                        
+                        # If no specific instrument found, use the first one (NIFTY)
+                        if instrument_key is None:
+                            instrument_key = list(self.instruments[self.broker_type].keys())[0]
+                            self._log_live_feed(f"No specific instrument found for {instrument_name}, using default: {instrument_key}")
+                        
+                        # Store the latest price in datawarehouse for P&L calculations
+                        datawarehouse.store_latest_price(instrument_key, price, volume, 'live_feed')
+                        self._log_live_feed(f"✓ Updated latest price for {instrument_key}: {price} (from {instrument_name})")
+                        
+                    except (ValueError, TypeError) as e:
+                        self._log_live_feed(f"Error converting price for {instrument_name}: {e}")
+                        continue
+                        
+                except Exception as e:
+                    self._log_live_feed(f"Error processing feed for {instrument_name}: {e}")
+                    continue
             
-            if price is not None:
-                # Try to find the instrument key in the data
-                instrument_key = None
-                for key in self.instruments[self.broker_type].keys():
-                    if key in data_str:
-                        instrument_key = key
-                        break
-                
-                # If no specific instrument found, use the first one (NIFTY)
-                if instrument_key is None:
-                    instrument_key = list(self.instruments[self.broker_type].keys())[0]
-                    self._log_live_feed(f"No specific instrument found, using default: {instrument_key}")
-                
-                # Store only the latest price in datawarehouse for P&L calculations
-                datawarehouse.store_latest_price(instrument_key, price, volume)
-                self._log_live_feed(f"✓ Updated latest price for {instrument_key}: {price} (Volume: {volume})")
-                
-                
-            else:
-                logger.warning(f"Could not extract price from data: {data_str[:100]}...")
+            logger.info(f"Processed Upstox feeds at {datetime.now()}")
                     
         except Exception as e:
             logger.error(f"Error processing Upstox data: {e}")
@@ -488,7 +483,7 @@ class MarketDataApp:
                         
                         if price is not None:
                             # Store only the latest price in datawarehouse for P&L calculations
-                            datawarehouse.store_latest_price(str(instrument_token), price, volume)
+                            datawarehouse.store_latest_price(str(instrument_token), price, volume, 'live_feed')
                             self._log_live_feed(f"✓ Updated latest price for {instrument_token}: {price} (Volume: {volume})")
                             
         except Exception as e:
@@ -637,6 +632,14 @@ class MarketDataApp:
         try:
             self.chart_app = TkinterChartApp(self.chart_visualizer)
             
+            # Set the current agent for order placement
+            if self.agent:
+                self.chart_app.set_agent(self.agent)
+                logger.info(f"Trading agent set in chart app: {type(self.agent).__name__}")
+            
+            # Set the main app reference in chart app for chart refresh
+            self.chart_app._main_app = self
+            
             logger.info("Starting chart application...")
             
             # Auto-start the chart and timer
@@ -659,8 +662,14 @@ class MarketDataApp:
             try:
                 logger.info("Auto-displaying strategy in Grid 2...")
                 self.manage_strategies()
+                # Note: _display_appropriate_chart() is already called in manage_strategies()
             except Exception as e:
                 logger.error(f"Error in auto strategy display: {e}")
+                # Fallback: try to display appropriate chart
+                try:
+                    self._display_appropriate_chart()
+                except Exception as fallback_error:
+                    logger.error(f"Error in fallback chart display: {fallback_error}")
             
             # Override the window close handler to include cleanup
             def cleanup_and_close():
@@ -677,9 +686,14 @@ class MarketDataApp:
                 except Exception as e:
                     logger.error(f"Error during cleanup: {e}")
                 finally:
-                    # Force exit
-                    import os
-                    os._exit(0)
+                    # Call the chart app's close handler for proper cleanup
+                    if hasattr(self.chart_app, 'on_closing'):
+                        self.chart_app.on_closing()
+                    else:
+                        # Fallback: destroy the window and exit
+                        self.chart_app.root.destroy()
+                        import os
+                        os._exit(0)
             
             # Set the cleanup function as the window close handler
             self.chart_app.root.protocol("WM_DELETE_WINDOW", cleanup_and_close)
@@ -722,51 +736,31 @@ class MarketDataApp:
             if result.get("action_taken") == "iron_condor_created":
                 logger.info(f"Created Iron Condor strategy: {result.get('trade_created')}")
                 
-                # Display Iron Condor strategy in Grid 2
-                if self.chart_app and hasattr(self.chart_app, 'display_iron_condor_strategy'):
-                    try:
-                        # Get the created trade from the strategy manager (not database)
-                        trade_id = result.get('trade_created')
-                        if trade_id:
-                            # Get the trade object directly from strategy manager
-                            # Since we're not storing in DB, we need to recreate it
-                            
-                            # Get spot price from datawarehouse instead of hardcoding
-                            primary_instrument = list(self.instruments[self.broker_type].keys())[0]
-                            spot_price = datawarehouse.get_latest_price(primary_instrument)
-                            
-                            # Fallback to result spot_price or default if datawarehouse doesn't have data
-                            if spot_price is None:
-                                spot_price = result.get('spot_price', 250)
-                                logger.warning(f"No spot price available from datawarehouse, using fallback: {spot_price}")
-                            else:
-                                logger.info(f"Retrieved spot price from datawarehouse: {spot_price}")
-                            
-                            try:
-                                trade = self.strategy_manager.create_iron_condor_strategy(spot_price)
-                                
-                                # Calculate payoff data
-                                payoff_data = self.strategy_manager.calculate_iron_condor_payoff(trade, spot_price)
-                                
-                                # Display in Grid 2
-                                self.chart_app.display_iron_condor_strategy(trade, spot_price, payoff_data)
-                                logger.info(f"Displayed Iron Condor strategy in Grid 2 with spot price: {spot_price}")
-                                
-                            except Exception as strategy_error:
-                                logger.error(f"Failed to create Iron Condor strategy: {strategy_error}")
-                                # Display error message in chart
-                                if self.chart_app and hasattr(self.chart_app, 'display_error_message'):
-                                    self.chart_app.display_error_message(f"Failed to create Iron Condor strategy: {strategy_error}")
-                                else:
-                                    logger.error("Cannot display error message - chart app not available or missing display_error_message method")
-                    except Exception as e:
-                        logger.error(f"Error displaying Iron Condor strategy: {e}")
-                        
+                # Check if there are open trades and display appropriate chart
+                self._display_appropriate_chart()
+            elif result.get("action_taken") == "display_open_trades":
+                logger.info(f"Displaying open trades payoff for {result.get('open_positions', 0)} trades")
+                
+                # Display open trades payoff directly
+                open_trades = result.get("open_trades", [])
+                if open_trades:
+                    self._display_open_trades_payoff(open_trades)
+                else:
+                    logger.warning("No open trades provided in result")
+                    self._display_appropriate_chart()
             elif result.get("action_taken") == "error":
                 logger.error(f"Strategy management error: {result.get('error')}")
-                
+                # Display error message in UI
+                if self.chart_app and hasattr(self.chart_app, 'display_error_message'):
+                    error_message = result.get('error', 'Unknown error occurred')
+                    self.chart_app.display_error_message(error_message)
+                    logger.info("Error message displayed in UI")
+                else:
+                    logger.warning("Cannot display error message - chart app not available")
             else:
-                logger.warning(f"Unknown action taken: {result.get('action_taken')}")
+                # For other actions, also check what to display
+                self._display_appropriate_chart()
+                logger.info(f"Action taken: {result.get('action_taken')}")
             
             return result
             
@@ -776,6 +770,94 @@ class MarketDataApp:
                 "error": str(e),
                 "action_taken": "error"
             }
+    
+    def _display_appropriate_chart(self):
+        """Display appropriate chart based on open trades availability"""
+        try:
+            from trade_database import TradeDatabase
+            from trade_models import TradeStatus
+            
+            logger.info("_display_appropriate_chart called - checking for open trades...")
+            
+            # Check if there are open trades
+            db = TradeDatabase("trades.db")
+            open_trades = db.get_open_trades()
+            
+            logger.info(f"Database query returned {len(open_trades)} open trades")
+            
+            if open_trades:
+                # Display trade payoff charts for open trades
+                logger.info(f"Found {len(open_trades)} open trades, displaying trade payoff charts")
+                self._display_open_trades_payoff(open_trades)
+            else:
+                # No open trades, display Iron Condor strategy
+                logger.info("No open trades found, displaying Iron Condor strategy")
+                self._display_iron_condor_strategy()
+                
+        except Exception as e:
+            logger.error(f"Error displaying appropriate chart: {e}")
+            # Fallback to Iron Condor strategy
+            self._display_iron_condor_strategy()
+    
+    def _display_open_trades_payoff(self, open_trades):
+        """Display payoff charts for open trades"""
+        try:
+            logger.info(f"_display_open_trades_payoff called with {len(open_trades)} trades")
+            
+            if not self.chart_app or not hasattr(self.chart_app, 'display_open_trades_payoff'):
+                logger.warning("Chart app not available or missing display_open_trades_payoff method")
+                return
+            
+            # Get current spot price
+            primary_instrument = list(self.instruments[self.broker_type].keys())[0]
+            spot_price = datawarehouse.get_latest_price(primary_instrument)
+            
+            if spot_price is None:
+                spot_price = 250  # Fallback
+                logger.warning(f"No spot price available, using fallback: {spot_price}")
+            
+            logger.info(f"Calling chart_app.display_open_trades_payoff with spot_price: {spot_price}")
+            
+            # Display open trades payoff
+            self.chart_app.display_open_trades_payoff(open_trades, spot_price)
+            logger.info(f"Displayed open trades payoff for {len(open_trades)} trades")
+            
+        except Exception as e:
+            logger.error(f"Error displaying open trades payoff: {e}")
+            import traceback
+            traceback.print_exc()
+    
+    def _display_iron_condor_strategy(self):
+        """Display Iron Condor strategy when no open trades"""
+        try:
+            if not self.chart_app or not hasattr(self.chart_app, 'display_iron_condor_strategy'):
+                logger.warning("Chart app not available or missing display_iron_condor_strategy method")
+                return
+            
+            # Get spot price from datawarehouse
+            primary_instrument = list(self.instruments[self.broker_type].keys())[0]
+            spot_price = datawarehouse.get_latest_price(primary_instrument)
+            
+            # Fallback to default if datawarehouse doesn't have data
+            if spot_price is None:
+                spot_price = 250
+                logger.warning(f"No spot price available from datawarehouse, using fallback: {spot_price}")
+            else:
+                logger.info(f"Retrieved spot price from datawarehouse: {spot_price}")
+            
+            # Create and display Iron Condor strategy
+            trade = self.strategy_manager.create_iron_condor_strategy(spot_price)
+            payoff_data = self.strategy_manager.calculate_iron_condor_payoff(trade, spot_price)
+            self.chart_app.display_iron_condor_strategy(trade, spot_price, payoff_data)
+            logger.info(f"Displayed Iron Condor strategy in Grid 2 with spot price: {spot_price}")
+            
+        except Exception as e:
+            logger.error(f"Error displaying Iron Condor strategy: {e}")
+            # Display error message in chart
+            if self.chart_app and hasattr(self.chart_app, 'display_error_message'):
+                self.chart_app.display_error_message(f"Failed to create Iron Condor strategy: {e}")
+            else:
+                logger.error("Cannot display error message - chart app not available or missing display_error_message method")
     
     def cleanup(self):
         """Clean up all resources and stop all processes"""
