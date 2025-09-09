@@ -91,6 +91,11 @@ class LiveChartVisualizer:
         self.grid2_update_interval = 5.0  # Update Grid 2 every 5 seconds
         self.pending_live_data = {}  # Store pending live data updates
         
+        # Datawarehouse timer for fetching live data
+        self.datawarehouse_timer = None  # Timer for fetching data from datawarehouse
+        self.datawarehouse_update_interval = 5.0  # Fetch from datawarehouse every 5 seconds
+        self.datawarehouse = None  # Reference to datawarehouse instance
+        
     def add_instrument(self, instrument_key, instrument_name=None):
         """Add a new instrument to track"""
         if instrument_name is None:
@@ -106,6 +111,68 @@ class LiveChartVisualizer:
     def set_live_data_callback(self, callback):
         """Set callback for live data updates"""
         self.live_data_callback = callback
+    
+    def set_datawarehouse(self, datawarehouse):
+        """Set reference to datawarehouse instance"""
+        self.datawarehouse = datawarehouse
+        self.logger.info("Datawarehouse reference set for chart visualizer")
+    
+    def start_datawarehouse_timer(self):
+        """Start timer to fetch data from datawarehouse every 5 seconds"""
+        try:
+            if self.datawarehouse_timer:
+                self.datawarehouse_timer.cancel()
+            
+            self.datawarehouse_timer = threading.Timer(self.datawarehouse_update_interval, self._fetch_from_datawarehouse)
+            self.datawarehouse_timer.daemon = True
+            self.datawarehouse_timer.start()
+            
+        except Exception as e:
+            self.logger.error(f"Error starting datawarehouse timer: {e}")
+    
+    def stop_datawarehouse_timer(self):
+        """Stop the datawarehouse timer"""
+        try:
+            if self.datawarehouse_timer:
+                self.datawarehouse_timer.cancel()
+                self.datawarehouse_timer = None
+                self.logger.info("Stopped datawarehouse timer")
+        except Exception as e:
+            self.logger.error(f"Error stopping datawarehouse timer: {e}")
+    
+    def _fetch_from_datawarehouse(self):
+        """Fetch latest data from datawarehouse and update only chart 2 (payoff chart)"""
+        try:
+            if not self.datawarehouse:
+                self.logger.warning("No datawarehouse reference available")
+                return
+            
+            # Get all instruments we're tracking
+            for instrument_key in self.candle_data.keys():
+                try:
+                    # Get latest price from datawarehouse
+                    latest_price = self.datawarehouse.get_latest_price(instrument_key)
+                    if latest_price is not None:
+                        # Update current price (for display purposes only)
+                        self.current_prices[instrument_key] = latest_price
+                        
+                        # Only call live data callback for payoff chart updates (chart 2)
+                        # Do NOT add to data_queue to avoid affecting chart 1
+                        if self.live_data_callback:
+                            self._call_live_data_callback_with_interval(instrument_key, latest_price, 0)
+                        
+                        self.logger.debug(f"Fetched from datawarehouse for chart 2: {instrument_key} = {latest_price}")
+                    
+                except Exception as e:
+                    self.logger.error(f"Error fetching data for {instrument_key} from datawarehouse: {e}")
+            
+            # Schedule next fetch
+            self.start_datawarehouse_timer()
+            
+        except Exception as e:
+            self.logger.error(f"Error fetching from datawarehouse: {e}")
+            # Still schedule next fetch even if this one failed
+            self.start_datawarehouse_timer()
     
     def _call_live_data_callback_with_interval(self, instrument_key, price, volume):
         """Call live data callback with 5-second interval control"""
@@ -126,7 +193,6 @@ class LiveChartVisualizer:
                 if self.live_data_callback:
                     self.live_data_callback(instrument_key, price, volume)
                 self.last_grid2_update = current_time
-                self.logger.debug(f"Grid 2 updated with live data: {price}")
             else:
                 # Log that we're storing data for later update
                 remaining_time = self.grid2_update_interval - (current_time - self.last_grid2_update)
@@ -928,6 +994,9 @@ class LiveChartVisualizer:
             cache_frame_data=False, save_count=100
         )
         
+        # Start datawarehouse timer for fetching live data
+        self.start_datawarehouse_timer()
+        
         self.logger.info("Live chart started")
     
     def stop_chart(self):
@@ -940,6 +1009,9 @@ class LiveChartVisualizer:
         
         if self.ani:
             self.ani.event_source.stop()
+        
+        # Stop datawarehouse timer
+        self.stop_datawarehouse_timer()
         
         self.logger.info("Live chart stopped")
     
@@ -1796,9 +1868,11 @@ class TkinterChartApp:
                 
             # Find the most recent data (use the first available instrument)
             latest_data = None
+            primary_instrument = list(self._main_app.instruments[self._main_app.broker_type].keys())[0]
             for instrument_key, data in self.chart.pending_live_data.items():
-                if latest_data is None or data['timestamp'] > latest_data['timestamp']:
-                    latest_data = data
+                if instrument_key == primary_instrument:
+                    if latest_data is None or data['timestamp'] > latest_data['timestamp']:
+                        latest_data = data
             
             if latest_data:
                 # Update the payoff chart with new spot price
@@ -1821,21 +1895,87 @@ class TkinterChartApp:
             # Update the spot price line in the chart
             ax = self.grid2_fig.axes[0] if self.grid2_fig.axes else None
             if ax:
-                # Find and update the spot price line
-                for line in ax.lines:
-                    # Check if this is the spot price line by looking at the label
-                    if hasattr(line, '_label') and line._label and 'Current Spot' in str(line._label):
-                        # Get current y limits
-                        ylim = ax.get_ylim()
-                        # Update the x position of the vertical line
-                        line.set_xdata([new_spot_price, new_spot_price])
-                        line.set_ydata([ylim[0], ylim[1]])
-                        # Update the label
-                        line.set_label(f'Current Spot: {new_spot_price}')
-                        break
+                # Remove any existing spot price lines and create a new one
+                # Get current y-limits BEFORE removing any lines to preserve them
+                original_ylim = ax.get_ylim()
                 
-                # Update the chart
-                self.grid2_fig.canvas.draw_idle()
+                # Find and remove existing spot price lines and text
+                lines_to_remove = []
+                texts_to_remove = []
+                
+                # Find lines to remove (spot price lines)
+                # Look for red dashed lines (our spot price lines)
+                for line in ax.lines:
+                    try:
+                        # Check if this is a red dashed line (our spot price line)
+                        # Either by label or by visual properties
+                        line_label = getattr(line, '_label', '') or ''
+                        is_spot_line_by_label = 'Current Spot' in str(line_label)
+                        is_spot_line_by_props = (hasattr(line, 'get_color') and line.get_color() == 'red' and
+                                               hasattr(line, 'get_linestyle') and line.get_linestyle() == '--' and
+                                               hasattr(line, 'get_linewidth') and line.get_linewidth() == 2)
+                        
+                        if is_spot_line_by_label or is_spot_line_by_props:
+                            lines_to_remove.append(line)
+                    except Exception:
+                        # Skip if we can't get line properties
+                        pass
+                
+                # Remove the old spot price lines
+                for line in lines_to_remove:
+                    try:
+                        line.remove()
+                    except Exception:
+                        # Ignore errors when removing lines
+                        pass
+                
+                # Remove existing spot price text objects (to avoid duplicates)
+                # Only remove text objects that look like spot price values (numeric)
+                texts_to_remove = []
+                for text in ax.texts[:]:  # Create a copy to avoid modification during iteration
+                    try:
+                        # Check if text object is still valid
+                        if hasattr(text, 'get_text') and hasattr(text, 'remove'):
+                            text_content = str(text.get_text())
+                            # Check if this looks like a spot price (numeric value)
+                            if text_content.replace('.', '').replace('-', '').isdigit():
+                                texts_to_remove.append(text)
+                    except Exception:
+                        # Skip if we can't get text content or text is invalid
+                        pass
+                
+                for text in texts_to_remove:
+                    try:
+                        if hasattr(text, 'remove'):
+                            text.remove()
+                    except Exception:
+                        # Ignore errors when removing text objects
+                        pass
+                
+                # Create a new spot price line using the original y-limits
+                ax.plot([new_spot_price, new_spot_price], [original_ylim[0], original_ylim[1]], 
+                       color='red', linestyle='--', linewidth=2, label='Current Spot')
+                
+                # Add/update spot price text near x-axis
+                try:
+                    text_y_position = original_ylim[0] + (original_ylim[1] - original_ylim[0]) * 0.05
+                    text_obj = ax.text(new_spot_price, text_y_position, f'{new_spot_price}', 
+                                     ha='center', va='bottom', fontsize=10, fontweight='bold', 
+                                     bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+                    
+                    # Ensure the text object is properly associated with the figure
+                    if hasattr(text_obj, 'set_figure'):
+                        text_obj.set_figure(ax.get_figure())
+                        
+                except Exception as e:
+                    self.logger.warning(f"Could not add spot price text: {e}")
+                
+                # Restore the original y-limits to prevent axis expansion
+                ax.set_ylim(original_ylim)
+                
+                # Force chart refresh
+                self.grid2_fig.canvas.draw()
+                self.grid2_fig.canvas.flush_events()
                 
                 # Update the current spot price
                 self._current_spot_price = new_spot_price
@@ -2006,17 +2146,49 @@ class TkinterChartApp:
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
             import matplotlib.pyplot as plt
             
-            fig, ax = plt.subplots(figsize=(6, 4))
+            # Create figure with responsive size based on grid2 frame
+            try:
+                grid2_width = self.grid2_frame.winfo_width()
+                grid2_height = self.grid2_frame.winfo_height()
+                
+                if grid2_width > 50 and grid2_height > 50:
+                    # Calculate figure size based on grid dimensions
+                    dpi = 100  # Default DPI
+                    fig_width = max(grid2_width / dpi, 8.0)  # Minimum 8 inches
+                    fig_height = max(grid2_height / dpi, 6.0)  # Minimum 6 inches
+                else:
+                    # Fallback to larger default size
+                    fig_width, fig_height = 10.0, 7.0
+            except:
+                # Fallback to larger default size
+                fig_width, fig_height = 10.0, 7.0
+            
+            fig, ax = plt.subplots(figsize=(fig_width, fig_height))
+            
+            # Adjust subplot to ensure x-axis is visible
+            plt.subplots_adjust(bottom=0.15, left=0.1, right=0.95, top=0.9)
             
             # Plot payoff curve
             ax.plot(payoff_data["price_range"], payoff_data["payoffs"], 
-                   'b-', linewidth=2, label='Payoff at Expiry')
+                   'b-', linewidth=2)
             
             # Mark current spot price (using plot for easier updates)
             ylim = ax.get_ylim()
             ax.plot([spot_price, spot_price], [ylim[0], ylim[1]], 
-                   color='red', linestyle='--', linewidth=2,
-                   label=f'Current Spot: {spot_price}')
+                   color='red', linestyle='--', linewidth=2, label='Current Spot')
+            
+            # Add spot price text near x-axis
+            try:
+                text_obj = ax.text(spot_price, ylim[0] + (ylim[1] - ylim[0]) * 0.05, f'{spot_price}', 
+                                 ha='center', va='bottom', fontsize=10, fontweight='bold', 
+                                 bbox=dict(boxstyle='round,pad=0.3', facecolor='white', alpha=0.8))
+                
+                # Ensure the text object is properly associated with the figure
+                if hasattr(text_obj, 'set_figure'):
+                    text_obj.set_figure(ax.get_figure())
+                    
+            except Exception as e:
+                self.logger.warning(f"Could not add initial spot price text: {e}")
             
             # Mark strikes
             strikes = [leg.strike_price for leg in trade.legs]
@@ -2033,20 +2205,25 @@ class TkinterChartApp:
             ax.set_ylabel('Profit/Loss (₹)')
             ax.set_title(f'Iron Condor - {trade.trade_id}')
             ax.grid(True, alpha=0.3)
-            ax.legend(fontsize=8)
+            # Legend removed as requested
             
             # Add color filling for profit/loss zones (only in chart area)
             # Use the actual data range instead of full chart limits
             price_range = payoff_data["price_range"]
             payoffs = payoff_data["payoffs"]
             
+            # Convert to numpy arrays for proper comparison
+            import numpy as np
+            price_range = np.array(price_range)
+            payoffs = np.array(payoffs)
+            
             # Fill area above zero with green (profit zone) - only where data exists
             ax.fill_between(price_range, 0, payoffs, where=(payoffs >= 0), 
-                           color='green', alpha=0.1, label='Profit Zone')
+                           color='green', alpha=0.1)
             
             # Fill area below zero with red (loss zone) - only where data exists
             ax.fill_between(price_range, payoffs, 0, where=(payoffs < 0), 
-                           color='red', alpha=0.1, label='Loss Zone')
+                           color='red', alpha=0.1)
             
             # Calculate risk reward ratio for initial display
             max_profit = payoff_data["max_profit"]
@@ -2207,8 +2384,27 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
                 import matplotlib.pyplot as plt
                 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
                 
-                # Create figure for Grid 2
-                self.grid2_fig, self.grid2_ax = plt.subplots(figsize=(6, 4))
+                # Create figure for Grid 2 with responsive size
+                try:
+                    grid2_width = self.grid2_frame.winfo_width()
+                    grid2_height = self.grid2_frame.winfo_height()
+                    
+                    if grid2_width > 50 and grid2_height > 50:
+                        # Calculate figure size based on grid dimensions
+                        dpi = 100  # Default DPI
+                        fig_width = max(grid2_width / dpi, 8.0)  # Minimum 8 inches
+                        fig_height = max(grid2_height / dpi, 6.0)  # Minimum 6 inches
+                    else:
+                        # Fallback to larger default size
+                        fig_width, fig_height = 10.0, 7.0
+                except:
+                    # Fallback to larger default size
+                    fig_width, fig_height = 10.0, 7.0
+                
+                self.grid2_fig, self.grid2_ax = plt.subplots(figsize=(fig_width, fig_height))
+                
+                # Adjust subplot to ensure x-axis is visible
+                plt.subplots_adjust(bottom=0.15, left=0.1, right=0.95, top=0.9)
                 
                 # Create canvas and add to content frame (or grid2_frame as fallback)
                 target_frame = self.content_frame if hasattr(self, 'content_frame') else self.grid2_frame
@@ -2551,6 +2747,8 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
             breakeven_texts = []
             spot_price = getattr(self, '_current_spot_price', price)  # Use spot price if available, fallback to hovered price
             for breakeven in payoff_data['breakevens']:
+                if isinstance(breakeven, (list, tuple)):
+                    breakeven = breakeven[0] if breakeven else 0
                 percentage_change = ((breakeven - spot_price) / spot_price) * 100
                 sign = "+" if percentage_change >= 0 else ""
                 breakeven_texts.append(f"{breakeven:.0f} ({sign}{percentage_change:.1f}%)")
@@ -2665,6 +2863,10 @@ Breakevens: {', '.join(breakeven_texts)}"""
                             fig_height = max(grid2_height / dpi, 3.0)
                             
                             self.grid2_fig.set_size_inches(fig_width, fig_height)
+                            
+                            # Reapply subplot adjustments after resize
+                            import matplotlib.pyplot as plt
+                            plt.subplots_adjust(bottom=0.15, left=0.1, right=0.95, top=0.9)
                             
                             # Force the canvas to resize
                             if hasattr(self.grid2_fig, 'canvas') and self.grid2_fig.canvas:

@@ -192,6 +192,9 @@ class MarketDataApp:
             if not self.agent.subscribe_live_data(instrument_keys):
                 raise RuntimeError("Failed to subscribe to live data")
             
+            # Set datawarehouse reference in chart visualizer
+            self.chart_visualizer.set_datawarehouse(datawarehouse)
+            
             # Start chart
             self.chart_visualizer.start_chart()
             
@@ -220,7 +223,7 @@ class MarketDataApp:
         try:
             self._log_live_feed(f"Received live data: {type(data)} - {str(data)[:200]}...")
             
-            # Process data based on broker type
+            # Process data based on broker type (only updates datawarehouse)
             if self.broker_type == "upstox":
                 self._process_upstox_data(data)
             elif self.broker_type == "kite":
@@ -228,15 +231,7 @@ class MarketDataApp:
             else:
                 logger.warning(f"Unknown broker type: {self.broker_type}")
             
-            # Update chart visualizer with live data
-            if self.chart_visualizer:
-                # Get the primary instrument
-                primary_instrument = list(self.instruments[self.broker_type].keys())[0]
-                # Get the latest price from datawarehouse
-                latest_price = datawarehouse.get_latest_price(primary_instrument)
-                if latest_price:
-                    # Update the chart visualizer
-                    self.chart_visualizer.update_data(primary_instrument, {'price': latest_price, 'volume': 0})
+            # Chart will fetch data from datawarehouse via its own timer
             
         except Exception as e:
             logger.error(f"Error processing live data: {e}")
