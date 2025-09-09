@@ -744,6 +744,9 @@ class LiveChartVisualizer:
             max_time = all_timestamps[-1]
             time_range = max_time - min_time
             
+            # Debug logging
+            self.logger.info(f"Time range: {min_time.strftime('%H:%M:%S')} to {max_time.strftime('%H:%M:%S')}")
+            
             # Convert to matplotlib date format
             import matplotlib.dates as mdates
             min_time_mpl = mdates.date2num(min_time)
@@ -758,9 +761,21 @@ class LiveChartVisualizer:
             
             # Set up time formatting based on data range
             if time_range.total_seconds() <= 3600:  # Less than 1 hour
-                # Show 5-minute intervals
-                minute_locator = mdates.MinuteLocator(interval=5)
-                self.price_ax.xaxis.set_major_locator(minute_locator)
+                # Create custom 5-minute intervals starting from 9:21
+                # Generate ticks every 5 minutes starting from 9:21
+                start_tick = min_time.replace(hour=9, minute=21, second=0, microsecond=0)
+                if min_time < start_tick:
+                    start_tick = start_tick - timedelta(days=1) if min_time.hour < 9 else start_tick
+                
+                # Create custom tick positions
+                ticks = []
+                current_tick = start_tick
+                while current_tick <= max_time + timedelta(minutes=5):
+                    ticks.append(current_tick)
+                    current_tick += timedelta(minutes=5)
+                
+                # Set custom ticks
+                self.price_ax.set_xticks([mdates.date2num(t) for t in ticks])
             elif time_range.total_seconds() <= 14400:  # Less than 4 hours
                 # Show 15-minute intervals
                 minute_locator = mdates.MinuteLocator(interval=15)
@@ -777,9 +792,21 @@ class LiveChartVisualizer:
             self.price_ax.tick_params(axis='x', rotation=45)
             
             # Set x-axis limits based on data range
-            # Add some padding (5% on each side)
-            padding = time_range * 0.05
-            self.price_ax.set_xlim(min_time - padding, max_time + padding)
+            # Ensure x-axis starts from 9:15 AM if data starts before that
+            start_time = min_time
+            if min_time.hour == 9 and min_time.minute < 15:
+                # If data starts before 9:15, align to 9:15
+                start_time = min_time.replace(hour=9, minute=15, second=0, microsecond=0)
+            
+            # Add padding on left to show first candle fully, and padding on right
+            left_padding = timedelta(minutes=5)  # 5 minutes before first candle for better visibility
+            right_padding = time_range * 0.05
+            final_start = start_time - left_padding
+            final_end = max_time + right_padding
+            self.price_ax.set_xlim(final_start, final_end)
+            
+            # Debug logging
+            self.logger.info(f"X-axis limits: {final_start.strftime('%H:%M:%S')} to {final_end.strftime('%H:%M:%S')}")
             
             # Adjust layout to prevent label cutoff
             self.price_ax.tick_params(axis='x', labelsize=8, pad=10)
