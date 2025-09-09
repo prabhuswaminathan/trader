@@ -1475,22 +1475,18 @@ class LiveChartVisualizer:
             # Create or update vertical line using plot method for better visibility
             if self.crosshair_vline is None or not hasattr(self.crosshair_vline, 'set_xdata'):
                 self.crosshair_vline, = self.price_ax.plot([x, x], [ylim[0], ylim[1]], color='darkgrey', linestyle='--', alpha=0.7, linewidth=1)
-                self.logger.info("Created new vertical crosshair line")
             else:
                 self.crosshair_vline.set_xdata([x, x])
                 self.crosshair_vline.set_ydata([ylim[0], ylim[1]])
                 self.crosshair_vline.set_visible(True)
-                self.logger.info("Updated existing vertical crosshair line")
             
             # Create or update horizontal line using plot method for better visibility
             if self.crosshair_hline is None or not hasattr(self.crosshair_hline, 'set_ydata'):
                 self.crosshair_hline, = self.price_ax.plot([xlim[0], xlim[1]], [y, y], color='darkgrey', linestyle='--', alpha=0.7, linewidth=1)
-                self.logger.info("Created new horizontal crosshair line")
             else:
                 self.crosshair_hline.set_xdata([xlim[0], xlim[1]])
                 self.crosshair_hline.set_ydata([y, y])
                 self.crosshair_hline.set_visible(True)
-                self.logger.info("Updated existing horizontal crosshair line")
             
             # Force redraw to make crosshair visible
             if hasattr(self, 'fig') and self.fig:
@@ -1583,6 +1579,11 @@ class TkinterChartApp:
     def __init__(self, chart_visualizer):
         self.chart = chart_visualizer
         self.logger = logging.getLogger("TkinterChartApp")
+        
+        # Chart 2 crosshair functionality
+        self.grid2_crosshair_vline = None  # Vertical crosshair line for chart 2
+        self.grid2_crosshair_hline = None  # Horizontal crosshair line for chart 2
+        
         self.root = tk.Tk()
         self.root.title("Live Market Data Chart - 2x2 Grid Layout")
         
@@ -1822,8 +1823,15 @@ class TkinterChartApp:
             if ax:
                 # Find and update the spot price line
                 for line in ax.lines:
-                    if hasattr(line, '_label') and 'Current Spot' in str(line._label):
+                    # Check if this is the spot price line by looking at the label
+                    if hasattr(line, '_label') and line._label and 'Current Spot' in str(line._label):
+                        # Get current y limits
+                        ylim = ax.get_ylim()
+                        # Update the x position of the vertical line
                         line.set_xdata([new_spot_price, new_spot_price])
+                        line.set_ydata([ylim[0], ylim[1]])
+                        # Update the label
+                        line.set_label(f'Current Spot: {new_spot_price}')
                         break
                 
                 # Update the chart
@@ -2004,20 +2012,18 @@ class TkinterChartApp:
             ax.plot(payoff_data["price_range"], payoff_data["payoffs"], 
                    'b-', linewidth=2, label='Payoff at Expiry')
             
-            # Mark current spot price
-            ax.axvline(x=spot_price, color='red', linestyle='--', 
-                      label=f'Current Spot: {spot_price}')
+            # Mark current spot price (using plot for easier updates)
+            ylim = ax.get_ylim()
+            ax.plot([spot_price, spot_price], [ylim[0], ylim[1]], 
+                   color='red', linestyle='--', linewidth=2,
+                   label=f'Current Spot: {spot_price}')
             
             # Mark strikes
             strikes = [leg.strike_price for leg in trade.legs]
             for strike in strikes:
                 ax.axvline(x=strike, color='gray', linestyle=':', alpha=0.7)
             
-            # Mark breakeven points
-            for be in payoff_data["breakevens"]:
-                ax.axvline(x=be, color='green', linestyle=':', alpha=0.7)
-                ax.text(be, payoff_data["max_profit"] * 0.1, f'BE: {be}', 
-                       rotation=90, ha='right', va='bottom', fontsize=8)
+            # Breakeven points are now only shown in the strategy details text
             
             # Add horizontal line at zero profit/loss (without label)
             ax.axhline(y=0, color='black', linestyle='-', alpha=0.8, linewidth=1)
@@ -2042,11 +2048,17 @@ class TkinterChartApp:
             ax.fill_between(price_range, payoffs, 0, where=(payoffs < 0), 
                            color='red', alpha=0.1, label='Loss Zone')
             
+            # Calculate risk reward ratio for initial display
+            max_profit = payoff_data["max_profit"]
+            max_loss = abs(payoff_data["max_loss"])
+            risk_reward_ratio = max_loss / max_profit if max_profit > 0 else 0
+            
             # Add strategy details text box (will be updated on hover)
             initial_strategy_text = f"""Strategy Details:
 Strikes: {sorted(strikes)}
-Max Profit: ₹{payoff_data["max_profit"]:.0f}
+Max Profit: ₹{max_profit:.0f}
 Max Loss: ₹{payoff_data["max_loss"]:.0f}
+Risk:Reward Ratio: {risk_reward_ratio:.2f}
 Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
             
             strategy_text_obj = ax.text(0.02, 0.98, initial_strategy_text, transform=ax.transAxes,
@@ -2480,20 +2492,25 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
             def hover(event):
                 """Handle mouse hover events"""
                 if event.inaxes != ax:
-                    # Mouse left chart area, restore original text
+                    # Mouse left chart area, restore original text and hide crosshair
                     self._strategy_text_obj.set_text(self._original_strategy_text)
+                    self._hide_grid2_crosshair()
                     fig.canvas.draw_idle()
                     return
                 
                 if event.xdata is None or event.ydata is None:
-                    # Invalid data, restore original text
+                    # Invalid data, restore original text and hide crosshair
                     self._strategy_text_obj.set_text(self._original_strategy_text)
+                    self._hide_grid2_crosshair()
                     fig.canvas.draw_idle()
                     return
                 
                 # Get hover position
                 hover_price = event.xdata
                 hover_payoff = event.ydata
+                
+                # Update crosshair position
+                self._update_grid2_crosshair(hover_price, hover_payoff, ax)
                 
                 # Find the closest point on the payoff curve
                 price_range = payoff_data["price_range"]
@@ -2538,13 +2555,19 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
                 sign = "+" if percentage_change >= 0 else ""
                 breakeven_texts.append(f"{breakeven:.0f} ({sign}{percentage_change:.1f}%)")
             
+            # Calculate risk reward ratio
+            max_profit = payoff_data['max_profit']
+            max_loss = abs(payoff_data['max_loss'])  # Use absolute value for loss
+            risk_reward_ratio = max_loss / max_profit if max_profit > 0 else 0
+            
             # Create detailed strategy text for the text box
             strategy_text = f"""Strategy Details at NIFTY {price:.0f}:
 
 Total P&L: ₹{payoff:.0f}
 
-Max Profit: ₹{payoff_data['max_profit']:.0f}
+Max Profit: ₹{max_profit:.0f}
 Max Loss: ₹{payoff_data['max_loss']:.0f}
+Risk:Reward Ratio: {risk_reward_ratio:.2f}
 Breakevens: {', '.join(breakeven_texts)}"""
             
             return strategy_text
@@ -2560,6 +2583,36 @@ Breakevens: {', '.join(breakeven_texts)}"""
                 self.status_label.config(text=f"Status: {message}")
         except Exception as e:
             self.logger.error(f"Error updating status: {e}")
+    
+    def _update_grid2_crosshair(self, x, y, ax):
+        """Update crosshair position for chart 2 (Iron Condor payoff chart)"""
+        try:
+            if not ax or x is None or y is None:
+                return
+            
+            # Get chart bounds
+            xlim = ax.get_xlim()
+            ylim = ax.get_ylim()
+            
+            # Create or update vertical line only
+            if self.grid2_crosshair_vline is None or not hasattr(self.grid2_crosshair_vline, 'set_xdata'):
+                self.grid2_crosshair_vline, = ax.plot([x, x], [ylim[0], ylim[1]], 
+                                                    color='darkgrey', linestyle='--', alpha=0.7, linewidth=1)
+            else:
+                self.grid2_crosshair_vline.set_xdata([x, x])
+                self.grid2_crosshair_vline.set_ydata([ylim[0], ylim[1]])
+                self.grid2_crosshair_vline.set_visible(True)
+            
+        except Exception as e:
+            self.logger.error(f"Error updating chart 2 crosshair: {e}")
+    
+    def _hide_grid2_crosshair(self):
+        """Hide crosshair line for chart 2"""
+        try:
+            if self.grid2_crosshair_vline:
+                self.grid2_crosshair_vline.set_visible(False)
+        except Exception as e:
+            self.logger.error(f"Error hiding chart 2 crosshair: {e}")
     
     
     def _on_window_resize(self, event):

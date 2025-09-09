@@ -458,9 +458,7 @@ class MarketDataApp:
                 except Exception as e:
                     self._log_live_feed(f"Error processing feed for {instrument_name}: {e}")
                     continue
-            
-            logger.info(f"Processed Upstox feeds at {datetime.now()}")
-                    
+                                
         except Exception as e:
             logger.error(f"Error processing Upstox data: {e}")
             logger.error(f"Data type: {type(data)}, Data: {str(data)[:200]}...")
