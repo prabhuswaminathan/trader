@@ -140,9 +140,38 @@ class LiveChartVisualizer:
         except Exception as e:
             self.logger.error(f"Error stopping datawarehouse timer: {e}")
     
+    def stop_all_timers(self):
+        """Stop all timers in the chart visualizer"""
+        try:
+            self.logger.info("Stopping all chart visualizer timers...")
+            
+            # Stop datawarehouse timer (5-second updates)
+            self.stop_datawarehouse_timer()
+            
+            # Stop any other timers that might exist
+            if hasattr(self, 'chart_timer') and self.chart_timer:
+                self.chart_timer.cancel()
+                self.chart_timer = None
+                self.logger.info("Stopped chart timer")
+            
+            self.logger.info("✅ All chart visualizer timers stopped")
+            
+        except Exception as e:
+            self.logger.error(f"Error stopping all timers: {e}")
+    
     def _fetch_from_datawarehouse(self):
         """Fetch latest data from datawarehouse and update only chart 2 (payoff chart)"""
         try:
+            # Check if it's after market close (3:45 PM)
+            from datetime import datetime, time as dt_time
+            current_time = datetime.now().time()
+            market_close_time = dt_time(15, 45)  # 3:45 PM
+            
+            if current_time >= market_close_time:
+                self.logger.info(f"Market close detected at {current_time.strftime('%H:%M:%S')} - stopping datawarehouse timer")
+                self.stop_datawarehouse_timer()
+                return
+            
             if not self.datawarehouse:
                 self.logger.warning("No datawarehouse reference available")
                 return

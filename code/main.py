@@ -383,6 +383,15 @@ class MarketDataApp:
     def _process_upstox_data(self, data):
         """Process Upstox live data - handle new response format with feeds object"""
         try:
+            # Check if it's after market close (3:45 PM)
+            current_time = datetime.now().time()
+            if self._is_after_market_close(current_time):
+                self._log_live_feed(f"Market close detected at {current_time.strftime('%H:%M:%S')} - stopping live feed processing")
+                # Disconnect from live feed
+                if hasattr(self, 'broker_agent') and self.broker_agent:
+                    self.broker_agent.disconnect_live_feed()
+                return
+            
             # Log the received data for debugging
             self._log_live_feed(f"Processing Upstox data: {type(data)} - {str(data)[:100]}...")
             
@@ -461,6 +470,15 @@ class MarketDataApp:
     def _process_kite_data(self, data):
         """Process Kite live data - simplified to store only latest price for P&L calculations"""
         try:
+            # Check if it's after market close (3:45 PM)
+            current_time = datetime.now().time()
+            if self._is_after_market_close(current_time):
+                self._log_live_feed(f"Market close detected at {current_time.strftime('%H:%M:%S')} - stopping live feed processing")
+                # Disconnect from live feed
+                if hasattr(self, 'broker_agent') and self.broker_agent:
+                    self.broker_agent.disconnect_live_feed()
+                return
+            
             # Check if data is valid
             if data is None:
                 logger.warning("Received None data from Kite")
@@ -509,6 +527,38 @@ class MarketDataApp:
         except Exception as e:
             logger.error(f"Error stopping timer: {e}")
     
+    def _stop_all_timers_and_feeds(self):
+        """Stop all timers and live feed after market close (3:45 PM)"""
+        try:
+            logger.info("Stopping all timers and live feed after market close...")
+            
+            # Stop the main trading timer
+            self.stop_timer()
+            
+            # Stop the datawarehouse timer (5-second updates for chart 2)
+            if self.chart_visualizer:
+                self.chart_visualizer.stop_datawarehouse_timer()
+                logger.info("Stopped datawarehouse timer (5-second chart 2 updates)")
+            
+            # Disconnect from live feed
+            if hasattr(self, 'broker_agent') and self.broker_agent:
+                try:
+                    self.broker_agent.disconnect_live_feed()
+                    logger.info("Disconnected from live feed")
+                except Exception as e:
+                    logger.warning(f"Error disconnecting live feed: {e}")
+            
+            # Stop any other timers
+            if hasattr(self, 'chart_visualizer') and self.chart_visualizer:
+                # Stop any other chart timers
+                if hasattr(self.chart_visualizer, 'stop_all_timers'):
+                    self.chart_visualizer.stop_all_timers()
+            
+            logger.info("✅ All timers and live feed stopped after market close")
+            
+        except Exception as e:
+            logger.error(f"Error stopping timers and feeds: {e}")
+    
     def _timer_loop(self):
         """Main timer loop that runs from 9:15 AM to 3:30 PM"""
         try:
@@ -516,6 +566,16 @@ class MarketDataApp:
             
             while self.timer_running:
                 current_time = datetime.now().time()
+                
+                # Check if it's after market close (3:45 PM)
+                if self._is_after_market_close(current_time):
+                    logger.info(f"Market close detected at {current_time.strftime('%H:%M:%S')} - stopping all timers and live feed")
+                    
+                    # Stop all timers and live feed
+                    self._stop_all_timers_and_feeds()
+                    
+                    # Exit the timer loop
+                    break
                 
                 # Check if it's a trading holiday
                 if self._is_trading_holiday:
@@ -549,6 +609,11 @@ class MarketDataApp:
     def _is_market_hours(self, current_time: dt_time) -> bool:
         """Check if current time is within market hours (9:15 AM - 3:30 PM)"""
         return self.market_start_time <= current_time <= self.market_end_time
+    
+    def _is_after_market_close(self, current_time: dt_time) -> bool:
+        """Check if current time is after market close (3:45 PM)"""
+        market_close_time = dt_time(15, 45)  # 3:45 PM
+        return current_time >= market_close_time
     
     def _wait_for_next_interval(self):
         """Wait for the next 5-minute interval + 10 seconds"""
