@@ -20,7 +20,7 @@ logger = logging.getLogger("StrategyManager")
 class StrategyManager:
     """Manages trading strategies and position tracking"""
     
-    def __init__(self, agent=None, instruments=None, broker_type=None, db_path: str = "market_trades.db"):
+    def __init__(self, agent=None, instruments=None, broker_type=None, db_path: str = "trades.db"):
         """Initialize the strategy manager"""
         self.db = TradeDatabase(db_path)
         self.option_chain = None

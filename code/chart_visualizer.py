@@ -2598,10 +2598,10 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
             self.grid2_ax.set_title(f'Open Trades Payoff - {len(open_trades)} Trades', fontsize=14, fontweight='bold')
             
             # Add legend
-            self.grid2_ax.legend(loc='upper left')
+            # self.grid2_ax.legend(loc='upper left')
             
             # Format axes
-            self.grid2_ax.grid(True, alpha=0.3)
+            # self.grid2_ax.grid(True, alpha=0.3)
             
             # Store trade details for hover functionality
             self._current_open_trades = trade_details

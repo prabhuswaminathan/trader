@@ -20,7 +20,7 @@ def main():
     print("=" * 50)
     
     # Initialize database
-    db = TradeDatabase("market_trades.db")
+    db = TradeDatabase("trades.db")
     print("✅ Database initialized")
     
     # Example 1: Create and save an Iron Condor trade
@@ -166,7 +166,7 @@ def main():
         print(f"   Backup file: {backup_path}")
     
     print("\n✅ Example completed successfully!")
-    print(f"Database file: market_trades.db")
+    print(f"Database file: trades.db")
     print(f"Backup file: {backup_path}")
 
 if __name__ == "__main__":
