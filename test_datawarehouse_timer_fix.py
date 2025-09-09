@@ -93,7 +93,7 @@ def test_datawarehouse_timer():
         initial_spot_price = 24950
         
         logger.info("Displaying Iron Condor strategy...")
-        app.display_iron_condor_strategy(trade, initial_spot_price, payoff_data)
+        app.display_trade_payoff_graph(trade, initial_spot_price, payoff_data)
         
         # Start the datawarehouse timer
         logger.info("Starting datawarehouse timer...")

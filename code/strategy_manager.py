@@ -187,7 +187,7 @@ class StrategyManager:
                 return option
         return None
     
-    def calculate_iron_condor_payoff(self, trade: Trade, spot_price: float) -> Dict[str, Any]:
+    def calculate_trade_payoff(self, trade: Trade, spot_price: float) -> Dict[str, Any]:
         """Calculate Iron Condor payoff analysis"""
         try:
             # Extract legs
@@ -269,7 +269,7 @@ class StrategyManager:
     def plot_iron_condor(self, trade: Trade, spot_price: float, save_path: Optional[str] = None):
         """Plot Iron Condor payoff diagram"""
         try:
-            payoff_data = self.calculate_iron_condor_payoff(trade, spot_price)
+            payoff_data = self.calculate_trade_payoff(trade, spot_price)
             
             if not payoff_data:
                 logger.error("No payoff data available for plotting")

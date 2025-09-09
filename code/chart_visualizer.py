@@ -2186,7 +2186,7 @@ class TkinterChartApp:
         except Exception as e:
             print(f"Error initializing Grid 2 content: {e}")
     
-    def display_iron_condor_strategy(self, trade, spot_price, payoff_data):
+    def display_trade_payoff_graph(self, trade, spot_price, payoff_data):
         """Display Iron Condor strategy chart in Grid 2"""
         try:
             # Store trade reference for later use in updates
@@ -2737,11 +2737,15 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
                     spot_price = self._main_app.datawarehouse.get_latest_price(primary_instrument)
                     if spot_price is None:
                         spot_price = 250
+
+                    payoff_data = self.strategy_manager.calculate_trade_payoff(open_trades, spot_price)
+                    self.chart_app.display_trade_payoff_graph(open_trades, spot_price, payoff_data)
+                    self.logger.info(f"Displayed Iron Condor strategy in Grid 2 with spot price: {spot_price}")
                     
                     self.display_open_trades_payoff(open_trades, spot_price)
                 else:
                     # No open trades, display Iron Condor strategy
-                    self._main_app._display_iron_condor_strategy()
+                    self._main_app._display_trade_payoff_graph()
                     
         except Exception as e:
             self.logger.error(f"Error refreshing chart display: {e}")

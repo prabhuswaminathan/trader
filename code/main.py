@@ -850,12 +850,12 @@ class MarketDataApp:
             else:
                 # No open trades, display Iron Condor strategy
                 logger.info("No open trades found, displaying Iron Condor strategy")
-                self._display_iron_condor_strategy()
+                self._display_trade_payoff_graph()
                 
         except Exception as e:
             logger.error(f"Error displaying appropriate chart: {e}")
             # Fallback to Iron Condor strategy
-            self._display_iron_condor_strategy()
+            self._display_trade_payoff_graph()
     
     def _display_open_trades_payoff(self, open_trades):
         """Display payoff charts for open trades"""
@@ -885,11 +885,11 @@ class MarketDataApp:
             import traceback
             traceback.print_exc()
     
-    def _display_iron_condor_strategy(self):
+    def _display_trade_payoff_graph(self):
         """Display Iron Condor strategy when no open trades"""
         try:
-            if not self.chart_app or not hasattr(self.chart_app, 'display_iron_condor_strategy'):
-                logger.warning("Chart app not available or missing display_iron_condor_strategy method")
+            if not self.chart_app or not hasattr(self.chart_app, 'display_trade_payoff_graph'):
+                logger.warning("Chart app not available or missing display_trade_payoff_graph method")
                 return
             
             # Get spot price from datawarehouse
@@ -905,8 +905,8 @@ class MarketDataApp:
             
             # Create and display Iron Condor strategy
             trade = self.strategy_manager.create_iron_condor_strategy(spot_price)
-            payoff_data = self.strategy_manager.calculate_iron_condor_payoff(trade, spot_price)
-            self.chart_app.display_iron_condor_strategy(trade, spot_price, payoff_data)
+            payoff_data = self.strategy_manager.calculate_trade_payoff(trade, spot_price)
+            self.chart_app.display_trade_payoff_graph(trade, spot_price, payoff_data)
             logger.info(f"Displayed Iron Condor strategy in Grid 2 with spot price: {spot_price}")
             
         except Exception as e:
