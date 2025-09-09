@@ -1957,16 +1957,20 @@ class TkinterChartApp:
                         pass
                 
                 # Remove existing spot price text objects (to avoid duplicates)
-                # Only remove text objects that look like spot price values (numeric)
+                # Only remove text objects that look like spot price values (numeric) and are positioned near the spot price
                 texts_to_remove = []
                 for text in ax.texts[:]:  # Create a copy to avoid modification during iteration
                     try:
                         # Check if text object is still valid
                         if hasattr(text, 'get_text') and hasattr(text, 'remove'):
                             text_content = str(text.get_text())
-                            # Check if this looks like a spot price (numeric value)
-                            if text_content.replace('.', '').replace('-', '').isdigit():
-                                texts_to_remove.append(text)
+                            # Check if this looks like a spot price (numeric value) and is positioned near the spot price line
+                            if (text_content.replace('.', '').replace('-', '').isdigit() and 
+                                hasattr(text, 'get_position')):
+                                text_pos = text.get_position()
+                                # Only remove if it's close to the spot price line (within 50 points)
+                                if abs(text_pos[0] - new_spot_price) < 50:
+                                    texts_to_remove.append(text)
                     except Exception:
                         # Skip if we can't get text content or text is invalid
                         pass
@@ -1999,6 +2003,12 @@ class TkinterChartApp:
                 
                 # Restore the original y-limits to prevent axis expansion
                 ax.set_ylim(original_ylim)
+                
+                # Preserve X-axis ticks at strike prices
+                if hasattr(self, 'current_trade') and self.current_trade:
+                    strikes = [leg.strike_price for leg in self.current_trade.legs]
+                    ax.set_xticks(strikes)
+                    ax.set_xticklabels([f'{strike}' for strike in strikes], rotation=45, ha='right')
                 
                 # Force chart refresh
                 self.grid2_fig.canvas.draw()
@@ -2150,6 +2160,9 @@ class TkinterChartApp:
     def display_iron_condor_strategy(self, trade, spot_price, payoff_data):
         """Display Iron Condor strategy chart in Grid 2"""
         try:
+            # Store trade reference for later use in updates
+            self.current_trade = trade
+            
             # Clear any existing content
             for widget in self.grid2_frame.winfo_children():
                 widget.destroy()
@@ -2192,8 +2205,8 @@ class TkinterChartApp:
             
             fig, ax = plt.subplots(figsize=(fig_width, fig_height))
             
-            # Adjust subplot to ensure x-axis is visible
-            plt.subplots_adjust(bottom=0.15, left=0.1, right=0.95, top=0.9)
+            # Adjust subplot to ensure x-axis is visible with more bottom space
+            plt.subplots_adjust(bottom=0.20, left=0.1, right=0.95, top=0.9)
             
             # Plot payoff curve
             ax.plot(payoff_data["price_range"], payoff_data["payoffs"], 
@@ -2221,6 +2234,10 @@ class TkinterChartApp:
             strikes = [leg.strike_price for leg in trade.legs]
             for strike in strikes:
                 ax.axvline(x=strike, color='gray', linestyle=':', alpha=0.7)
+            
+            # Set X-axis ticks at strike prices
+            ax.set_xticks(strikes)
+            ax.set_xticklabels([f'{strike}' for strike in strikes], rotation=45, ha='right')
             
             # Breakeven points are now only shown in the strategy details text
             
@@ -2430,8 +2447,8 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
                 
                 self.grid2_fig, self.grid2_ax = plt.subplots(figsize=(fig_width, fig_height))
                 
-                # Adjust subplot to ensure x-axis is visible
-                plt.subplots_adjust(bottom=0.15, left=0.1, right=0.95, top=0.9)
+                # Adjust subplot to ensure x-axis is visible with more bottom space
+                plt.subplots_adjust(bottom=0.20, left=0.1, right=0.95, top=0.9)
                 
                 # Create canvas and add to content frame (or grid2_frame as fallback)
                 target_frame = self.content_frame if hasattr(self, 'content_frame') else self.grid2_frame
@@ -2887,13 +2904,17 @@ Breakevens: {', '.join(breakeven_texts)}"""
                         if grid2_width > 50 and grid2_height > 50:
                             dpi = self.grid2_fig.get_dpi()
                             fig_width = max(grid2_width / dpi, 4.0)
-                            fig_height = max(grid2_height / dpi, 3.0)
+                            # Ensure minimum height to prevent x-axis cutoff
+                            fig_height = max(grid2_height / dpi, 4.0)  # Increased from 3.0 to 4.0
                             
                             self.grid2_fig.set_size_inches(fig_width, fig_height)
                             
                             # Reapply subplot adjustments after resize
                             import matplotlib.pyplot as plt
-                            plt.subplots_adjust(bottom=0.15, left=0.1, right=0.95, top=0.9)
+                            plt.subplots_adjust(bottom=0.20, left=0.1, right=0.95, top=0.9)
+                            
+                            # Debug logging for Chart 2 resize
+                            self.logger.info(f"Chart 2 resized to {fig_width:.1f}x{fig_height:.1f} inches with 20% bottom margin")
                             
                             # Force the canvas to resize
                             if hasattr(self.grid2_fig, 'canvas') and self.grid2_fig.canvas:
