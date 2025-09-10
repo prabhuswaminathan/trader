@@ -2206,15 +2206,20 @@ class TkinterChartApp:
                 self.display_error_message("Strategy manager not available")
                 return
             
-            if len(trades) == 1:
+            if len(trades) > 0:
                 # Single trade - use existing method
                 payoff_data = strategy_manager.calculate_trade_payoff(trades[0], spot_price)
-                chart_title = f"Strategy - {trades[0].trade_id}"
             else:
                 # Multiple trades - use combined method
                 payoff_data = strategy_manager.calculate_combined_trades_payoff(trades, spot_price)
-                chart_title = f"Portfolio - {len(trades)} Trades"
+                # Check if any trades are open
             
+            open_trades = [t for t in trades if t.status.value == "OPEN"]
+            if open_trades:
+                chart_title = f"Open Trades - {open_trades[0].trade_id}"
+            else:
+                chart_title = "Strategy To Trade"
+
             if not payoff_data:
                 self.logger.error("Failed to calculate payoff data")
                 self.display_error_message("Failed to calculate payoff data")
@@ -2224,13 +2229,13 @@ class TkinterChartApp:
             header_frame = ttk.Frame(self.grid2_frame)
             header_frame.pack(fill=tk.X, pady=(10, 5))
             
-            # Title
+            # Title (left aligned)
             title_label = ttk.Label(header_frame, text=chart_title, 
                                   font=("Arial", 14, "bold"))
             title_label.pack(side=tk.LEFT)
             
-            # Trade All button (top right) - only show for single trade
-            if len(trades) == 1:
+            # Trade All button (right aligned) - only show for single trade with no open trades
+            if len(trades) == 0:
                 self.trade_all_button = ttk.Button(header_frame, text="Trade All", 
                                                  command=self._show_trade_all_window,
                                                  state="normal")  # Enabled when strategy is displayed
@@ -2260,7 +2265,7 @@ class TkinterChartApp:
             fig, ax = plt.subplots(figsize=(fig_width, fig_height))
             
             # Adjust subplot to ensure x-axis is visible with more bottom space
-            plt.subplots_adjust(bottom=0.20, left=0.1, right=0.95, top=0.9)
+            plt.subplots_adjust(bottom=0.20, left=0.1, right=0.95, top=0.95)
             
             # Plot payoff curve
             ax.plot(payoff_data["price_range"], payoff_data["payoffs"], 
@@ -2317,7 +2322,6 @@ class TkinterChartApp:
             # Formatting
             ax.set_xlabel('NIFTY Price at Expiry')
             ax.set_ylabel('Profit/Loss (₹)')
-            ax.set_title(chart_title)
             ax.grid(True, alpha=0.3)
             # Legend removed as requested
             
@@ -2545,7 +2549,7 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
                 self.grid2_fig, self.grid2_ax = plt.subplots(figsize=(fig_width, fig_height))
                 
                 # Adjust subplot to ensure x-axis is visible with more bottom space
-                plt.subplots_adjust(bottom=0.20, left=0.1, right=0.95, top=0.9)
+                plt.subplots_adjust(bottom=0.20, left=0.1, right=0.95, top=0.95)
                 
                 # Create canvas and add to content frame (or grid2_frame as fallback)
                 target_frame = self.content_frame if hasattr(self, 'content_frame') else self.grid2_frame
@@ -2983,7 +2987,7 @@ Breakevens: {', '.join(breakeven_texts)}"""
                             
                             # Reapply subplot adjustments after resize
                             import matplotlib.pyplot as plt
-                            plt.subplots_adjust(bottom=0.20, left=0.1, right=0.95, top=0.9)
+                            plt.subplots_adjust(bottom=0.20, left=0.1, right=0.95, top=0.95)
                             
                             # Debug logging for Chart 2 resize
                             self.logger.info(f"Chart 2 resized to {fig_width:.1f}x{fig_height:.1f} inches with 20% bottom margin")
