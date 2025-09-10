@@ -266,6 +266,83 @@ class StrategyManager:
         else:  # short
             return premium - intrinsic_value
     
+    def calculate_combined_trades_payoff(self, trades: List[Trade], spot_price: float) -> Dict[str, Any]:
+        """Calculate combined payoff for multiple trades"""
+        try:
+            if not trades:
+                logger.warning("No trades provided for combined payoff calculation")
+                return {}
+            
+            # Collect all legs from all trades
+            all_legs = []
+            for trade in trades:
+                for leg in trade.legs:
+                    all_legs.append({
+                        "type": leg.option_type.value.lower(),
+                        "position": leg.position_type.value.lower(),
+                        "strike": leg.strike_price,
+                        "premium": leg.entry_price or 0.0,
+                        "quantity": leg.quantity,
+                        "trade_id": trade.trade_id
+                    })
+            
+            if not all_legs:
+                logger.warning("No legs found in provided trades")
+                return {}
+            
+            # Calculate payoff range based on all strikes
+            all_strikes = [leg["strike"] for leg in all_legs]
+            min_strike = min(all_strikes)
+            max_strike = max(all_strikes)
+            
+            # Create price range with wider range for better visualization
+            price_range = np.arange(
+                min_strike - 1000, 
+                max_strike + 1000, 
+                10
+            )
+            
+            # Calculate combined payoffs
+            payoffs = []
+            lot_size = 75  # NIFTY lot size
+            
+            for price in price_range:
+                total_payoff = 0
+                for leg in all_legs:
+                    leg_payoff = self._calculate_leg_payoff(price, leg)
+                    total_payoff += leg_payoff * leg["quantity"] * lot_size
+                payoffs.append(total_payoff)
+            
+            payoffs = np.array(payoffs)
+            
+            # Find max profit and loss
+            max_profit = np.max(payoffs)
+            max_loss = np.min(payoffs)
+            
+            # Find breakeven points
+            breakevens = []
+            for i in range(1, len(price_range)):
+                if payoffs[i-1] * payoffs[i] < 0:
+                    breakevens.append(round(price_range[i], 2))
+            
+            # Calculate current payoff
+            current_payoff = payoffs[np.argmin(np.abs(price_range - spot_price))]
+            
+            return {
+                "price_range": price_range,
+                "payoffs": payoffs,
+                "max_profit": max_profit,
+                "max_loss": max_loss,
+                "breakevens": breakevens,
+                "current_payoff": current_payoff,
+                "trade_count": len(trades),
+                "total_legs": len(all_legs)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating combined trades payoff: {e}")
+            return {}
+    
     def plot_iron_condor(self, trade: Trade, spot_price: float, save_path: Optional[str] = None):
         """Plot Iron Condor payoff diagram"""
         try:

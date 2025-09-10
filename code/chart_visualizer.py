@@ -2186,30 +2186,55 @@ class TkinterChartApp:
         except Exception as e:
             print(f"Error initializing Grid 2 content: {e}")
     
-    def display_trade_payoff_graph(self, trade, spot_price, payoff_data):
-        """Display Iron Condor strategy chart in Grid 2"""
+    def display_trade_payoff_graph(self, trades, spot_price, strategy_manager=None):
+        """Display trade payoff chart in Grid 2 for single or multiple trades"""
         try:
+            # Handle both single trade and list of trades
+            if not isinstance(trades, list):
+                trades = [trades]
+            
             # Store trade reference for later use in updates
-            self.current_trade = trade
+            self.current_trades = trades
             
             # Clear any existing content
             for widget in self.grid2_frame.winfo_children():
                 widget.destroy()
+            
+            # Calculate payoff data using strategy manager
+            if strategy_manager is None:
+                self.logger.error("Strategy manager not provided for payoff calculation")
+                self.display_error_message("Strategy manager not available")
+                return
+            
+            if len(trades) == 1:
+                # Single trade - use existing method
+                payoff_data = strategy_manager.calculate_trade_payoff(trades[0], spot_price)
+                chart_title = f"Strategy - {trades[0].trade_id}"
+            else:
+                # Multiple trades - use combined method
+                payoff_data = strategy_manager.calculate_combined_trades_payoff(trades, spot_price)
+                chart_title = f"Portfolio - {len(trades)} Trades"
+            
+            if not payoff_data:
+                self.logger.error("Failed to calculate payoff data")
+                self.display_error_message("Failed to calculate payoff data")
+                return
             
             # Header frame with title and Trade All button
             header_frame = ttk.Frame(self.grid2_frame)
             header_frame.pack(fill=tk.X, pady=(10, 5))
             
             # Title
-            title_label = ttk.Label(header_frame, text="Iron Condor Strategy", 
+            title_label = ttk.Label(header_frame, text=chart_title, 
                                   font=("Arial", 14, "bold"))
             title_label.pack(side=tk.LEFT)
             
-            # Trade All button (top right)
-            self.trade_all_button = ttk.Button(header_frame, text="Trade All", 
-                                             command=self._show_trade_all_window,
-                                             state="normal")  # Enabled when strategy is displayed
-            self.trade_all_button.pack(side=tk.RIGHT, padx=(10, 0))
+            # Trade All button (top right) - only show for single trade
+            if len(trades) == 1:
+                self.trade_all_button = ttk.Button(header_frame, text="Trade All", 
+                                                 command=self._show_trade_all_window,
+                                                 state="normal")  # Enabled when strategy is displayed
+                self.trade_all_button.pack(side=tk.RIGHT, padx=(10, 0))
             
             # Create matplotlib figure for Iron Condor
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
@@ -2259,14 +2284,30 @@ class TkinterChartApp:
             except Exception as e:
                 self.logger.warning(f"Could not add initial spot price text: {e}")
             
-            # Mark strikes
-            strikes = [leg.strike_price for leg in trade.legs]
-            for strike in strikes:
-                ax.axvline(x=strike, color='gray', linestyle=':', alpha=0.7)
+            # Mark strikes - collect all strikes from all trades
+            all_strikes = []
+            for trade in trades:
+                for leg in trade.legs:
+                    all_strikes.append(leg.strike_price)
             
-            # Set X-axis ticks at strike prices
-            ax.set_xticks(strikes)
-            ax.set_xticklabels([f'{strike}' for strike in strikes], rotation=45, ha='right')
+            # Remove duplicates and sort
+            unique_strikes = sorted(list(set(all_strikes)))
+            
+            # Only show strikes if there are not too many (avoid clutter)
+            if len(unique_strikes) <= 10:
+                for strike in unique_strikes:
+                    ax.axvline(x=strike, color='gray', linestyle=':', alpha=0.7)
+                
+                # Set X-axis ticks at strike prices
+                ax.set_xticks(unique_strikes)
+                ax.set_xticklabels([f'{strike}' for strike in unique_strikes], rotation=45, ha='right')
+            else:
+                # Too many strikes - just show a few key ones
+                key_strikes = [unique_strikes[0], unique_strikes[len(unique_strikes)//2], unique_strikes[-1]]
+                for strike in key_strikes:
+                    ax.axvline(x=strike, color='gray', linestyle=':', alpha=0.7)
+                ax.set_xticks(key_strikes)
+                ax.set_xticklabels([f'{strike}' for strike in key_strikes], rotation=45, ha='right')
             
             # Breakeven points are now only shown in the strategy details text
             
@@ -2276,7 +2317,7 @@ class TkinterChartApp:
             # Formatting
             ax.set_xlabel('NIFTY Price at Expiry')
             ax.set_ylabel('Profit/Loss (₹)')
-            ax.set_title(f'Iron Condor - {trade.trade_id}')
+            ax.set_title(chart_title)
             ax.grid(True, alpha=0.3)
             # Legend removed as requested
             
@@ -2304,8 +2345,22 @@ class TkinterChartApp:
             risk_reward_ratio = max_loss / max_profit if max_profit > 0 else 0
             
             # Add strategy details text box (will be updated on hover)
-            initial_strategy_text = f"""Strategy Details:
+            if len(trades) == 1:
+                # Single trade details
+                trade = trades[0]
+                strikes = [leg.strike_price for leg in trade.legs]
+                initial_strategy_text = f"""Strategy Details:
+Trade: {trade.trade_id}
 Strikes: {sorted(strikes)}
+Max Profit: ₹{max_profit:.0f}
+Max Loss: ₹{payoff_data["max_loss"]:.0f}
+Risk:Reward Ratio: {risk_reward_ratio:.2f}
+Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
+            else:
+                # Multiple trades details
+                initial_strategy_text = f"""Portfolio Details:
+Trades: {len(trades)}
+Total Legs: {payoff_data.get("total_legs", 0)}
 Max Profit: ₹{max_profit:.0f}
 Max Loss: ₹{payoff_data["max_loss"]:.0f}
 Risk:Reward Ratio: {risk_reward_ratio:.2f}
@@ -2318,7 +2373,11 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
             plt.tight_layout()
             
             # Add hover functionality to update existing strategy details
-            self._add_hover_update(fig, ax, trade, payoff_data, spot_price, strategy_text_obj)
+            if len(trades) == 1:
+                self._add_hover_update(fig, ax, trades[0], payoff_data, spot_price, strategy_text_obj)
+            else:
+                # For multiple trades, use a simpler hover or skip it
+                self.logger.info("Hover functionality not implemented for multiple trades yet")
             
             # Store data for live updates
             self._current_payoff_data = payoff_data
@@ -2334,12 +2393,21 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
             info_frame = ttk.Frame(self.grid2_frame)
             info_frame.pack(fill=tk.X, pady=(5, 0))
             
-            trade_info = ttk.Label(info_frame, 
-                                 text=f"Trade: {trade.trade_id} | Status: {trade.status.value}",
-                                 font=("Arial", 8))
-            trade_info.pack()
-            
-            self.logger.info(f"Displayed Iron Condor strategy in Grid 2: {trade.trade_id}")
+            if len(trades) == 1:
+                trade = trades[0]
+                trade_info = ttk.Label(info_frame, 
+                                     text=f"Trade: {trade.trade_id} | Status: {trade.status.value}",
+                                     font=("Arial", 8))
+                trade_info.pack()
+                self.logger.info(f"Displayed strategy in Grid 2: {trade.trade_id}")
+            else:
+                # Show summary for multiple trades
+                trade_ids = [trade.trade_id for trade in trades]
+                trade_info = ttk.Label(info_frame, 
+                                     text=f"Portfolio: {len(trades)} trades | IDs: {', '.join(trade_ids[:3])}{'...' if len(trade_ids) > 3 else ''}",
+                                     font=("Arial", 8))
+                trade_info.pack()
+                self.logger.info(f"Displayed portfolio in Grid 2: {len(trades)} trades")
             
         except Exception as e:
             self.logger.error(f"Error displaying Iron Condor strategy: {e}")

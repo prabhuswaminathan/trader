@@ -874,10 +874,10 @@ class MarketDataApp:
                 spot_price = 250  # Fallback
                 logger.warning(f"No spot price available, using fallback: {spot_price}")
             
-            logger.info(f"Calling chart_app.display_open_trades_payoff with spot_price: {spot_price}")
+            logger.info(f"Calling chart_app.display_trade_payoff_graph with {len(open_trades)} trades and spot_price: {spot_price}")
             
-            # Display open trades payoff
-            self.chart_app.display_open_trades_payoff(open_trades, spot_price)
+            # Display open trades payoff using the unified method
+            self.chart_app.display_trade_payoff_graph(open_trades, spot_price, self.strategy_manager)
             logger.info(f"Displayed open trades payoff for {len(open_trades)} trades")
             
         except Exception as e:
@@ -905,8 +905,7 @@ class MarketDataApp:
             
             # Create and display Iron Condor strategy
             trade = self.strategy_manager.create_iron_condor_strategy(spot_price)
-            payoff_data = self.strategy_manager.calculate_trade_payoff(trade, spot_price)
-            self.chart_app.display_trade_payoff_graph(trade, spot_price, payoff_data)
+            self.chart_app.display_trade_payoff_graph(trade, spot_price, self.strategy_manager)
             logger.info(f"Displayed Iron Condor strategy in Grid 2 with spot price: {spot_price}")
             
         except Exception as e:
