@@ -2234,8 +2234,24 @@ class TkinterChartApp:
                                   font=("Arial", 14, "bold"))
             title_label.pack(side=tk.LEFT)
             
-            # Trade All button (right aligned) - only show for single trade with no open trades
-            if len(trades) == 0:
+            # Positions button (small square with positions icon)
+            positions_icon = "📊"  # Chart/positions emoji/unicode character
+            self.positions_button = ttk.Button(header_frame, text=positions_icon, 
+                                             command=self._show_positions_window,
+                                             width=3)  # Small square button
+            self.positions_button.pack(side=tk.RIGHT, padx=(5, 0))
+            
+            # Chain button (small square with chain icon)
+            chain_icon = "⛓"  # Chain emoji/unicode character
+            self.chain_button = ttk.Button(header_frame, text=chain_icon, 
+                                             command=self._show_chain_window,
+                                             width=3)  # Small square button
+            self.chain_button.pack(side=tk.RIGHT, padx=(5, 0))
+
+
+            # Buttons (right aligned) - only show for single trade with no open trades
+            if len(trades) == 0:                
+                # Trade All button
                 self.trade_all_button = ttk.Button(header_frame, text="Trade All", 
                                                  command=self._show_trade_all_window,
                                                  state="normal")  # Enabled when strategy is displayed
@@ -3164,6 +3180,148 @@ Max Loss: ₹{max_loss:,.0f}"""
             self.logger.error(f"Error showing trade all window: {e}")
             import tkinter.messagebox as msgbox
             msgbox.showerror("Error", f"Failed to open trade window: {e}")
+    
+    def _show_chain_window(self):
+        """Show chain/option chain window"""
+        try:
+            # Create new window
+            chain_window = tk.Toplevel(self.root)
+            chain_window.title("Option Chain")
+            chain_window.geometry("600x400")
+            chain_window.resizable(True, True)
+            
+            # Center the window
+            chain_window.transient(self.root)
+            chain_window.grab_set()
+            
+            # Main frame
+            main_frame = ttk.Frame(chain_window)
+            main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            
+            # Title
+            title_label = ttk.Label(main_frame, text="Option Chain", 
+                                  font=("Arial", 16, "bold"))
+            title_label.pack(pady=(0, 10))
+            
+            # Placeholder content
+            content_label = ttk.Label(main_frame, text="Option chain functionality will be implemented here", 
+                                    font=("Arial", 12))
+            content_label.pack(expand=True)
+            
+            # Close button
+            close_button = ttk.Button(main_frame, text="Close", 
+                                    command=chain_window.destroy)
+            close_button.pack(pady=(10, 0))
+            
+        except Exception as e:
+            self.logger.error(f"Error showing chain window: {e}")
+            import tkinter.messagebox as msgbox
+            msgbox.showerror("Error", f"Failed to open chain window: {e}")
+    
+    def _show_positions_window(self):
+        """Show current positions window"""
+        try:
+            # Create new window
+            positions_window = tk.Toplevel(self.root)
+            positions_window.title("Current Positions")
+            positions_window.geometry("800x500")
+            positions_window.resizable(True, True)
+            
+            # Center the window
+            positions_window.transient(self.root)
+            positions_window.grab_set()
+            
+            # Main frame
+            main_frame = ttk.Frame(positions_window)
+            main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+            
+            # Title
+            title_label = ttk.Label(main_frame, text="Current Positions", 
+                                  font=("Arial", 16, "bold"))
+            title_label.pack(pady=(0, 10))
+            
+            # Positions summary frame
+            summary_frame = ttk.LabelFrame(main_frame, text="Positions Summary", padding=10)
+            summary_frame.pack(fill=tk.X, pady=(0, 10))
+            
+            # Get current positions from strategy manager
+            if hasattr(self, 'strategy_manager') and self.strategy_manager:
+                try:
+                    open_positions = self.strategy_manager.get_open_positions()
+                    if open_positions:
+                        summary_text = f"Total Open Positions: {len(open_positions)}"
+                        for i, trade in enumerate(open_positions, 1):
+                            summary_text += f"\n{i}. {trade.trade_id} - {trade.strategy_name} ({trade.status.value})"
+                    else:
+                        summary_text = "No open positions found"
+                except Exception as e:
+                    summary_text = f"Error fetching positions: {e}"
+            else:
+                summary_text = "Strategy manager not available"
+            
+            summary_label = ttk.Label(summary_frame, text=summary_text, font=("Arial", 10))
+            summary_label.pack(anchor=tk.W)
+            
+            # Positions details frame
+            details_frame = ttk.LabelFrame(main_frame, text="Position Details", padding=10)
+            details_frame.pack(fill=tk.BOTH, expand=True)
+            
+            # Create treeview for positions
+            columns = ("Trade ID", "Strategy", "Status", "Underlying", "Legs", "P&L")
+            tree = ttk.Treeview(details_frame, columns=columns, show="headings", height=15)
+            
+            # Configure columns
+            tree.heading("Trade ID", text="Trade ID")
+            tree.heading("Strategy", text="Strategy")
+            tree.heading("Status", text="Status")
+            tree.heading("Underlying", text="Underlying")
+            tree.heading("Legs", text="Legs")
+            tree.heading("P&L", text="P&L")
+            
+            # Configure column widths
+            tree.column("Trade ID", width=120)
+            tree.column("Strategy", width=150)
+            tree.column("Status", width=80)
+            tree.column("Underlying", width=120)
+            tree.column("Legs", width=60)
+            tree.column("P&L", width=100)
+            
+            # Add scrollbar
+            scrollbar = ttk.Scrollbar(details_frame, orient=tk.VERTICAL, command=tree.yview)
+            tree.configure(yscrollcommand=scrollbar.set)
+            
+            # Pack treeview and scrollbar
+            tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            # Populate positions data
+            if hasattr(self, 'strategy_manager') and self.strategy_manager:
+                try:
+                    open_positions = self.strategy_manager.get_open_positions()
+                    for trade in open_positions:
+                        # Calculate P&L (placeholder - would need current spot price)
+                        pnl = "N/A"  # Could be calculated with current spot price
+                        
+                        tree.insert("", "end", values=(
+                            trade.trade_id,
+                            trade.strategy_name,
+                            trade.status.value,
+                            trade.underlying_instrument,
+                            len(trade.legs),
+                            pnl
+                        ))
+                except Exception as e:
+                    tree.insert("", "end", values=("Error", "Error", "Error", str(e), "0", "N/A"))
+            
+            # Close button
+            close_button = ttk.Button(main_frame, text="Close", 
+                                    command=positions_window.destroy)
+            close_button.pack(pady=(10, 0))
+            
+        except Exception as e:
+            self.logger.error(f"Error showing positions window: {e}")
+            import tkinter.messagebox as msgbox
+            msgbox.showerror("Error", f"Failed to open positions window: {e}")
     
     def _place_iron_condor_orders(self, trade_window, trade):
         """Place all Iron Condor orders using Upstox API"""
