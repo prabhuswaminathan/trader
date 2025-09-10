@@ -403,6 +403,70 @@ class Utils:
         except Exception as e:
             logger.error(f"Error getting expiry info: {e}")
             return {}
+    
+    @staticmethod
+    def format_option_chain_data(option_chain_data: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """
+        Format option chain data into a structured format with strike prices as keys.
+        
+        Args:
+            option_chain_data (List[Dict[str, Any]]): Raw option chain data from fetch_option_chain_data
+        
+        Returns:
+            Dict[str, Any]: Formatted option chain data with structure:
+                {
+                    "expiry": str,
+                    "pcr": float,
+                    "underlying_key": str,
+                    "underlying_spot_price": float,
+                    "strike_prices": {
+                        "21100": {
+                            "call_options": {...},
+                            "put_options": {...}
+                        },
+                        ...
+                    }
+                }
+        """
+        try:
+            if not option_chain_data:
+                return {}
+            
+            # Initialize the result structure
+            formatted_data = {
+                "expiry": "",
+                "pcr": 0.0,
+                "underlying_key": "",
+                "underlying_spot_price": 0.0,
+                "strike_prices": {}
+            }
+            
+            # Process each option in the data
+            for option in option_chain_data:
+                # Extract common information from the first option
+                if not formatted_data["expiry"]:
+                    formatted_data["expiry"] = option.get("expiry", "")
+                    formatted_data["pcr"] = option.get("pcr", 0.0)
+                    formatted_data["underlying_key"] = option.get("underlying_key", "")
+                    formatted_data["underlying_spot_price"] = option.get("underlying_spot_price", 0.0)
+                
+                # Get strike price
+                strike_price = str(option.get("strike_price", ""))
+                if not strike_price:
+                    continue
+                
+                # Initialize strike price entry if it doesn't exist
+                if strike_price not in formatted_data["strike_prices"]:
+                    formatted_data["strike_prices"][strike_price] = {
+                        "call_options": option.get("raw_data").get("_call_options"),
+                        "put_options": option.get("raw_data").get("_put_options")
+                    }
+                
+            return formatted_data
+            
+        except Exception as e:
+            logger.error(f"Error formatting option chain data: {e}")
+            return {}
 
 
 # Example usage and testing

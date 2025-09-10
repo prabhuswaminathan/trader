@@ -68,7 +68,12 @@ class UpstoxOptionChain:
         """Close the API client and clean up resources."""
         try:
             if hasattr(self, 'api_client') and self.api_client:
-                self.api_client.close()
+                # Check if the API client has a close method before calling it
+                if hasattr(self.api_client, 'close'):
+                    self.api_client.close()
+                else:
+                    # ApiClient doesn't have a close method, just set to None
+                    logger.debug("API client cleanup: ApiClient object has no close method")
                 self.api_client = None
             # Use a try-except to handle logger cleanup issues
             try:
@@ -670,55 +675,6 @@ class UpstoxOptionChain:
             logger.error(f"Error getting available strike prices: {e}")
             return []
     
-    def get_option_summary(self, expiry: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Get summary statistics for option chain.
-        
-        Args:
-            expiry (str, optional): Filter by specific expiry
-        
-        Returns:
-            Dict[str, Any]: Summary statistics
-        """
-        try:
-            data = self.fetch(expiry=expiry)
-            
-            if not data:
-                return {
-                    'total_contracts': 0,
-                    'call_contracts': 0,
-                    'put_contracts': 0,
-                    'expiries': [],
-                    'strike_range': {'min': None, 'max': None},
-                    'total_volume': 0,
-                    'total_open_interest': 0
-                }
-            
-            call_contracts = [opt for opt in data if opt.get('option_type') == 'CALL']
-            put_contracts = [opt for opt in data if opt.get('option_type') == 'PUT']
-            
-            strikes = [opt.get('strike_price') for opt in data if opt.get('strike_price') is not None]
-            expiries = list(set(opt.get('expiry_date') for opt in data if opt.get('expiry_date')))
-            
-            total_volume = sum(opt.get('volume', 0) or 0 for opt in data)
-            total_oi = sum(opt.get('open_interest', 0) or 0 for opt in data)
-            
-            return {
-                'total_contracts': len(data),
-                'call_contracts': len(call_contracts),
-                'put_contracts': len(put_contracts),
-                'expiries': sorted(expiries),
-                'strike_range': {
-                    'min': min(strikes) if strikes else None,
-                    'max': max(strikes) if strikes else None
-                },
-                'total_volume': total_volume,
-                'total_open_interest': total_oi
-            }
-            
-        except Exception as e:
-            logger.error(f"Error getting option summary: {e}")
-            return {}
     
     def clear_cache(self) -> None:
         """Clear the option chain cache."""

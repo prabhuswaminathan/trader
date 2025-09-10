@@ -3182,12 +3182,12 @@ Max Loss: ₹{max_loss:,.0f}"""
             msgbox.showerror("Error", f"Failed to open trade window: {e}")
     
     def _show_chain_window(self):
-        """Show chain/option chain window"""
+        """Show chain/option chain window with live data"""
         try:
             # Create new window
             chain_window = tk.Toplevel(self.root)
             chain_window.title("Option Chain")
-            chain_window.geometry("600x400")
+            chain_window.geometry("1000x600")
             chain_window.resizable(True, True)
             
             # Center the window
@@ -3198,25 +3198,160 @@ Max Loss: ₹{max_loss:,.0f}"""
             main_frame = ttk.Frame(chain_window)
             main_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
             
-            # Title
-            title_label = ttk.Label(main_frame, text="Option Chain", 
-                                  font=("Arial", 16, "bold"))
-            title_label.pack(pady=(0, 10))
+            # Title and info frame
+            header_frame = ttk.Frame(main_frame)
+            header_frame.pack(fill=tk.X, pady=(0, 10))
             
-            # Placeholder content
-            content_label = ttk.Label(main_frame, text="Option chain functionality will be implemented here", 
-                                    font=("Arial", 12))
-            content_label.pack(expand=True)
+            # Title
+            title_label = ttk.Label(header_frame, text="Option Chain", 
+                                  font=("Arial", 16, "bold"))
+            title_label.pack(side=tk.LEFT)
+            
+            # Refresh button
+            refresh_button = ttk.Button(header_frame, text="Refresh", 
+                                      command=lambda: self._refresh_option_chain(chain_window))
+            refresh_button.pack(side=tk.RIGHT)
+            
+            # Info frame for expiry and spot price
+            info_frame = ttk.LabelFrame(main_frame, text="Market Info", padding=5)
+            info_frame.pack(fill=tk.X, pady=(0, 10))
+            
+            self.chain_info_label = ttk.Label(info_frame, text="Loading...", font=("Arial", 10))
+            self.chain_info_label.pack()
+            
+            # Table frame
+            table_frame = ttk.LabelFrame(main_frame, text="Option Chain Data", padding=5)
+            table_frame.pack(fill=tk.BOTH, expand=True)
+            
+            # Create treeview for option chain table
+            columns = ("Put LTP", "Strike Price", "Call LTP")
+            self.chain_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=20)
+            
+            # Configure columns
+            self.chain_tree.heading("Put LTP", text="Put LTP")
+            self.chain_tree.heading("Strike Price", text="Strike Price")
+            self.chain_tree.heading("Call LTP", text="Call LTP")
+            
+            # Configure column widths
+            self.chain_tree.column("Put LTP", width=100, anchor="center")
+            self.chain_tree.column("Strike Price", width=120, anchor="center")
+            self.chain_tree.column("Call LTP", width=100, anchor="center")
+            
+            # Add scrollbar
+            scrollbar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.chain_tree.yview)
+            self.chain_tree.configure(yscrollcommand=scrollbar.set)
+            
+            # Pack treeview and scrollbar
+            self.chain_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            # Status frame
+            status_frame = ttk.Frame(main_frame)
+            status_frame.pack(fill=tk.X, pady=(10, 0))
+            
+            self.chain_status_label = ttk.Label(status_frame, text="Loading option chain data...", 
+                                              font=("Arial", 9))
+            self.chain_status_label.pack(side=tk.LEFT)
             
             # Close button
-            close_button = ttk.Button(main_frame, text="Close", 
+            close_button = ttk.Button(status_frame, text="Close", 
                                     command=chain_window.destroy)
-            close_button.pack(pady=(10, 0))
+            close_button.pack(side=tk.RIGHT)
+            
+            # Load option chain data
+            self._load_option_chain_data(chain_window)
             
         except Exception as e:
             self.logger.error(f"Error showing chain window: {e}")
             import tkinter.messagebox as msgbox
             msgbox.showerror("Error", f"Failed to open chain window: {e}")
+    
+    def _load_option_chain_data(self, chain_window):
+        """Load and display option chain data"""
+        try:
+            # Import required modules
+            from datawarehouse import datawarehouse
+            from trade_utils import Utils
+            
+            # Get current expiry date (next weekly expiry)
+            expiry_dates = Utils.get_next_weekly_expiry()
+            if not expiry_dates:
+                self.chain_status_label.config(text="Error: Could not get expiry date")
+                return
+            
+            expiry_date = expiry_dates[0]  # Use first expiry
+            instrument_key = "NSE_INDEX|Nifty 50"
+            
+            # Update status
+            self.chain_status_label.config(text=f"Fetching option chain data for {expiry_date}...")
+            chain_window.update()
+            
+            # Fetch option chain data
+            raw_data = datawarehouse.fetch_option_chain_data(
+                instrument_key=instrument_key,
+                expiry_date=expiry_date
+            )
+            
+            if not raw_data:
+                self.chain_status_label.config(text="Error: No option chain data received")
+                return
+            
+            # Format the data
+            formatted_data = Utils.format_option_chain_data(raw_data)
+            
+            if not formatted_data or not formatted_data.get("strike_prices"):
+                self.chain_status_label.config(text="Error: No formatted option chain data")
+                return
+            
+            # Update info label
+            spot_price = formatted_data.get("underlying_spot_price", 0)
+            pcr = formatted_data.get("pcr", 0)
+            info_text = f"Expiry: {expiry_date} | Spot: ₹{spot_price:,.2f} | PCR: {pcr:.2f}"
+            self.chain_info_label.config(text=info_text)
+            
+            # Clear existing data
+            for item in self.chain_tree.get_children():
+                self.chain_tree.delete(item)
+            
+            # Populate table with option chain data
+            strike_prices = sorted(formatted_data["strike_prices"].keys(), key=lambda x: float(x))
+            
+            for strike_price in strike_prices:
+                strike_data = formatted_data["strike_prices"][strike_price]
+                
+                # Get LTP values
+                put_ltp = "N/A"
+                call_ltp = "N/A"
+                
+                if strike_data.get("put_options"):
+                    put_ltp = f"₹{strike_data['put_options'].market_data.ltp:.2f}"
+                
+                if strike_data.get("call_options"):
+                    call_ltp = f"₹{strike_data['call_options'].market_data.ltp:.2f}"
+                
+                # Insert row
+                self.chain_tree.insert("", "end", values=(
+                    put_ltp,
+                    f"₹{strike_price}",
+                    call_ltp
+                ))
+            
+            # Update status
+            total_strikes = len(strike_prices)
+            from datetime import datetime
+            self.chain_status_label.config(text=f"Loaded {total_strikes} strike prices | Last updated: {datetime.now().strftime('%H:%M:%S')}")
+            
+        except Exception as e:
+            self.logger.error(f"Error loading option chain data: {e}")
+            self.chain_status_label.config(text=f"Error: {e}")
+    
+    def _refresh_option_chain(self, chain_window):
+        """Refresh option chain data"""
+        try:
+            self._load_option_chain_data(chain_window)
+        except Exception as e:
+            self.logger.error(f"Error refreshing option chain: {e}")
+            self.chain_status_label.config(text=f"Refresh error: {e}")
     
     def _show_positions_window(self):
         """Show current positions window"""

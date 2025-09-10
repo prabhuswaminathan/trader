@@ -1,7 +1,7 @@
 import logging
 import pandas as pd
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 import threading
 import json
 import os
@@ -527,6 +527,28 @@ class DataWarehouse:
         }
         
         return summary
+    
+    def fetch_option_chain_data(self, instrument_key: str, expiry_date: str, access_token: str = None) -> Dict[str, Any]:
+        # Import here to avoid circular imports
+        from upstox_option_chain import UpstoxOptionChain
+        
+        # Get access token from environment if not provided
+        if access_token is None:
+            from dotenv import load_dotenv
+            load_dotenv()
+            access_token = os.getenv('UPSTOX_ACCESS_TOKEN')
+            
+        if not access_token:
+            return None
+        # Create option chain instance
+        option_chain = UpstoxOptionChain(access_token=access_token)
+        
+        # Fetch option chain data
+        self.logger.info(f"Fetching option chain data for {instrument_key} with expiry {expiry_date}")
+        option_data = option_chain.fetch(expiry=expiry_date)
+        return option_data
+            
+
 
 
 # Global data warehouse instance
