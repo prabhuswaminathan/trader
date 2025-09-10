@@ -76,15 +76,6 @@ class MarketDataApp:
         # Trading holiday flag
         self._is_trading_holiday = False
     
-    def _safe_datetime_diff(self, dt1, dt2, default_seconds=0):
-        """Safely calculate datetime difference, handling None values"""
-        try:
-            if dt1 is None or dt2 is None:
-                return default_seconds
-            return (dt1 - dt2).total_seconds()
-        except Exception as e:
-            logger.warning(f"Error calculating datetime difference: {e}")
-            return default_seconds
     
     def enable_live_feed_debug(self, enable=True):
         """Enable or disable debug logging for live feed data"""
@@ -719,8 +710,8 @@ class MarketDataApp:
             # Auto-display strategy in Grid 2 on startup
             try:
                 logger.info("Auto-displaying strategy in Grid 2...")
-                self.manage_strategies()
-                # Note: _display_appropriate_chart() is already called in manage_strategies()
+                self.strategy_manager.initialize_option_chain(self.agent.ACCESS_TOKEN)
+                self._display_appropriate_chart()
             except Exception as e:
                 logger.error(f"Error in auto strategy display: {e}")
                 # Fallback: try to display appropriate chart
@@ -762,150 +753,34 @@ class MarketDataApp:
             logger.error(f"Error running chart app: {e}")
             raise
     
-    def manage_strategies(self, access_token: str = None) -> Dict[str, Any]:
-        """
-        Manage trading strategies - check for open positions and create Iron Condor if needed
-        
-        Args:
-            access_token: Upstox access token
-            
-        Returns:
-            Dict containing strategy management results
-        """
-        try:
-            logger.info("Starting strategy management...")
-            
-            # Get access token from agent if not provided
-            if access_token is None and self.agent and hasattr(self.agent, 'ACCESS_TOKEN'):
-                access_token = self.agent.ACCESS_TOKEN
-                logger.info("Using access token from agent")
-            elif access_token is None:
-                logger.error("No access token available for strategy management")
-                return {
-                    "error": "No access token available",
-                    "action_taken": "error"
-                }
-            
-            result = self.strategy_manager.manage_positions(access_token)
-            
-            # Log results
-            logger.info(f"Strategy management result: {result}")
-            
-            if result.get("action_taken") == "iron_condor_created":
-                logger.info(f"Created Iron Condor strategy: {result.get('trade_created')}")
-                
-                # Check if there are open trades and display appropriate chart
-                self._display_appropriate_chart()
-            elif result.get("action_taken") == "display_open_trades":
-                logger.info(f"Displaying open trades payoff for {result.get('open_positions', 0)} trades")
-                
-                # Display open trades payoff directly
-                open_trades = result.get("open_trades", [])
-                if open_trades:
-                    self._display_open_trades_payoff(open_trades)
-                else:
-                    logger.warning("No open trades provided in result")
-                    self._display_appropriate_chart()
-            elif result.get("action_taken") == "error":
-                logger.error(f"Strategy management error: {result.get('error')}")
-                # Display error message in UI
-                if self.chart_app and hasattr(self.chart_app, 'display_error_message'):
-                    error_message = result.get('error', 'Unknown error occurred')
-                    self.chart_app.display_error_message(error_message)
-                    logger.info("Error message displayed in UI")
-                else:
-                    logger.warning("Cannot display error message - chart app not available")
-            else:
-                # For other actions, also check what to display
-                self._display_appropriate_chart()
-                logger.info(f"Action taken: {result.get('action_taken')}")
-            
-            return result
-            
-        except Exception as e:
-            logger.error(f"Error in strategy management: {e}")
-            return {
-                "error": str(e),
-                "action_taken": "error"
-            }
-    
-    def _display_appropriate_chart(self):
-        """Display appropriate chart based on open trades availability"""
-        try:
-            from trade_database import TradeDatabase
-            from trade_models import TradeStatus
-            
-            logger.info("_display_appropriate_chart called - checking for open trades...")
-            
-            # Check if there are open trades
-            db = TradeDatabase("trades.db")
-            open_trades = db.get_open_trades()
-            
-            logger.info(f"Database query returned {len(open_trades)} open trades")
-            
-            if open_trades:
-                # Display trade payoff charts for open trades
-                logger.info(f"Found {len(open_trades)} open trades, displaying trade payoff charts")
-                self._display_open_trades_payoff(open_trades)
-            else:
-                # No open trades, display Iron Condor strategy
-                logger.info("No open trades found, displaying Iron Condor strategy")
-                self._display_trade_payoff_graph()
-                
-        except Exception as e:
-            logger.error(f"Error displaying appropriate chart: {e}")
-            # Fallback to Iron Condor strategy
-            self._display_trade_payoff_graph()
-    
-    def _display_open_trades_payoff(self, open_trades):
-        """Display payoff charts for open trades"""
-        try:
-            logger.info(f"_display_open_trades_payoff called with {len(open_trades)} trades")
-            
-            if not self.chart_app or not hasattr(self.chart_app, 'display_open_trades_payoff'):
-                logger.warning("Chart app not available or missing display_open_trades_payoff method")
-                return
-            
-            # Get current spot price
+    def get_open_trades(self):
+        """Get open trades from the database"""
+        from trade_database import TradeDatabase
+        db = TradeDatabase("trades.db")
+        open_trades = db.get_open_trades()
+        if open_trades:
+            return open_trades
+        else:
             primary_instrument = list(self.instruments[self.broker_type].keys())[0]
             spot_price = datawarehouse.get_latest_price(primary_instrument)
-            
-            if spot_price is None:
-                spot_price = 250  # Fallback
-                logger.warning(f"No spot price available, using fallback: {spot_price}")
-            
-            logger.info(f"Calling chart_app.display_trade_payoff_graph with {len(open_trades)} trades and spot_price: {spot_price}")
-            
-            # Display open trades payoff using the unified method
-            self.chart_app.display_trade_payoff_graph(open_trades, spot_price, self.strategy_manager)
-            logger.info(f"Displayed open trades payoff for {len(open_trades)} trades")
-            
-        except Exception as e:
-            logger.error(f"Error displaying open trades payoff: {e}")
-            import traceback
-            traceback.print_exc()
+            return self.strategy_manager.create_iron_condor_strategy(spot_price)
+
+    def _display_appropriate_chart(self):
+        """Display appropriate chart based on open trades availability"""
+        open_trades = self.get_open_trades()
+        primary_instrument = list(self.instruments[self.broker_type].keys())[0]
+        spot_price = datawarehouse.get_latest_price(primary_instrument)
+        self._display_trade_payoff_graph(open_trades, spot_price)
     
-    def _display_trade_payoff_graph(self):
+    
+    def _display_trade_payoff_graph(self, open_trades, spot_price):
         """Display Iron Condor strategy when no open trades"""
         try:
             if not self.chart_app or not hasattr(self.chart_app, 'display_trade_payoff_graph'):
                 logger.warning("Chart app not available or missing display_trade_payoff_graph method")
                 return
             
-            # Get spot price from datawarehouse
-            primary_instrument = list(self.instruments[self.broker_type].keys())[0]
-            spot_price = datawarehouse.get_latest_price(primary_instrument)
-            
-            # Fallback to default if datawarehouse doesn't have data
-            if spot_price is None:
-                spot_price = 250
-                logger.warning(f"No spot price available from datawarehouse, using fallback: {spot_price}")
-            else:
-                logger.info(f"Retrieved spot price from datawarehouse: {spot_price}")
-            
-            # Create and display Iron Condor strategy
-            trade = self.strategy_manager.create_iron_condor_strategy(spot_price)
-            self.chart_app.display_trade_payoff_graph(trade, spot_price, self.strategy_manager)
+            self.chart_app.display_trade_payoff_graph(open_trades, spot_price, self.strategy_manager)
             logger.info(f"Displayed Iron Condor strategy in Grid 2 with spot price: {spot_price}")
             
         except Exception as e:

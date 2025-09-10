@@ -2575,157 +2575,157 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
             import traceback
             traceback.print_exc()
     
-    def display_open_trades_payoff(self, open_trades, spot_price):
-        """Display payoff charts for open trades"""
-        try:
-            from trade_models import PositionType, OptionType
-            import numpy as np
+    # def display_open_trades_payoff(self, open_trades, spot_price):
+    #     """Display payoff charts for open trades"""
+    #     try:
+    #         from trade_models import PositionType, OptionType
+    #         import numpy as np
             
-            self.logger.info(f"display_open_trades_payoff called with {len(open_trades)} trades, spot_price: {spot_price}")
+    #         self.logger.info(f"display_open_trades_payoff called with {len(open_trades)} trades, spot_price: {spot_price}")
             
-            # Clear Grid 2 chart
-            self._clear_grid2_chart()
+    #         # Clear Grid 2 chart
+    #         self._clear_grid2_chart()
             
-            # Ensure axes are initialized
-            self._initialize_grid2_axes()
+    #         # Ensure axes are initialized
+    #         self._initialize_grid2_axes()
             
-            if not open_trades:
-                self.logger.warning("No open trades provided to display_open_trades_payoff")
-                self.display_error_message("No open trades to display")
-                return
+    #         if not open_trades:
+    #             self.logger.warning("No open trades provided to display_open_trades_payoff")
+    #             self.display_error_message("No open trades to display")
+    #             return
             
-            # Calculate combined payoff for all open trades
-            price_range = np.linspace(spot_price * 0.8, spot_price * 1.2, 100)
-            total_payoff = np.zeros_like(price_range)
+    #         # Calculate combined payoff for all open trades
+    #         price_range = np.linspace(spot_price * 0.8, spot_price * 1.2, 100)
+    #         total_payoff = np.zeros_like(price_range)
             
-            self.logger.info(f"Calculating payoff for price range: {price_range[0]:.0f} to {price_range[-1]:.0f}")
+    #         self.logger.info(f"Calculating payoff for price range: {price_range[0]:.0f} to {price_range[-1]:.0f}")
             
-            trade_details = []
+    #         trade_details = []
             
-            for trade in open_trades:
-                trade_payoff = np.zeros_like(price_range)
-                trade_info = {
-                    'trade_id': trade.trade_id,
-                    'strategy': trade.strategy_name,
-                    'legs': []
-                }
+    #         for trade in open_trades:
+    #             trade_payoff = np.zeros_like(price_range)
+    #             trade_info = {
+    #                 'trade_id': trade.trade_id,
+    #                 'strategy': trade.strategy_name,
+    #                 'legs': []
+    #             }
                 
-                for leg in trade.legs:
-                    if leg.entry_price is not None:
-                        # Calculate payoff for this leg
-                        if leg.position_type == PositionType.LONG:
-                            if leg.option_type == OptionType.CALL:
-                                # Long Call: max(0, S - K) - premium
-                                leg_payoff = np.maximum(0, price_range - leg.strike_price) - leg.entry_price
-                            else:  # PUT
-                                # Long Put: max(0, K - S) - premium
-                                leg_payoff = np.maximum(0, leg.strike_price - price_range) - leg.entry_price
-                        else:  # SHORT
-                            if leg.option_type == OptionType.CALL:
-                                # Short Call: premium - max(0, S - K)
-                                leg_payoff = leg.entry_price - np.maximum(0, price_range - leg.strike_price)
-                            else:  # PUT
-                                # Short Put: premium - max(0, K - S)
-                                leg_payoff = leg.entry_price - np.maximum(0, leg.strike_price - price_range)
+    #             for leg in trade.legs:
+    #                 if leg.entry_price is not None:
+    #                     # Calculate payoff for this leg
+    #                     if leg.position_type == PositionType.LONG:
+    #                         if leg.option_type == OptionType.CALL:
+    #                             # Long Call: max(0, S - K) - premium
+    #                             leg_payoff = np.maximum(0, price_range - leg.strike_price) - leg.entry_price
+    #                         else:  # PUT
+    #                             # Long Put: max(0, K - S) - premium
+    #                             leg_payoff = np.maximum(0, leg.strike_price - price_range) - leg.entry_price
+    #                     else:  # SHORT
+    #                         if leg.option_type == OptionType.CALL:
+    #                             # Short Call: premium - max(0, S - K)
+    #                             leg_payoff = leg.entry_price - np.maximum(0, price_range - leg.strike_price)
+    #                         else:  # PUT
+    #                             # Short Put: premium - max(0, K - S)
+    #                             leg_payoff = leg.entry_price - np.maximum(0, leg.strike_price - price_range)
                         
-                        # Multiply by quantity
-                        leg_payoff *= leg.quantity
-                        trade_payoff += leg_payoff
+    #                     # Multiply by quantity
+    #                     leg_payoff *= leg.quantity
+    #                     trade_payoff += leg_payoff
                         
-                        trade_info['legs'].append({
-                            'type': leg.option_type.value,
-                            'position': leg.position_type.value,
-                            'strike': leg.strike_price,
-                            'quantity': leg.quantity,
-                            'entry_price': leg.entry_price
-                        })
+    #                     trade_info['legs'].append({
+    #                         'type': leg.option_type.value,
+    #                         'position': leg.position_type.value,
+    #                         'strike': leg.strike_price,
+    #                         'quantity': leg.quantity,
+    #                         'entry_price': leg.entry_price
+    #                     })
                 
-                total_payoff += trade_payoff
-                trade_details.append(trade_info)
+    #             total_payoff += trade_payoff
+    #             trade_details.append(trade_info)
             
-            # Plot the combined payoff
-            self.grid2_ax.plot(price_range, total_payoff, 'b-', linewidth=2, label='Total Payoff')
+    #         # Plot the combined payoff
+    #         self.grid2_ax.plot(price_range, total_payoff, 'b-', linewidth=2, label='Total Payoff')
             
-            # Add zero line
-            self.grid2_ax.axhline(y=0, color='black', linestyle='--', alpha=0.5)
+    #         # Add zero line
+    #         self.grid2_ax.axhline(y=0, color='black', linestyle='--', alpha=0.5)
             
-            # Add current spot price line
-            self.grid2_ax.axvline(x=spot_price, color='red', linestyle=':', alpha=0.7, label=f'Current Spot: ₹{spot_price:.0f}')
+    #         # Add current spot price line
+    #         self.grid2_ax.axvline(x=spot_price, color='red', linestyle=':', alpha=0.7, label=f'Current Spot: ₹{spot_price:.0f}')
             
-            # Fill areas above and below zero
-            self.grid2_ax.fill_between(price_range, total_payoff, 0, 
-                                     where=(total_payoff >= 0), 
-                                     color='green', alpha=0.3, label='Profit Zone')
-            self.grid2_ax.fill_between(price_range, total_payoff, 0, 
-                                     where=(total_payoff < 0), 
-                                     color='red', alpha=0.3, label='Loss Zone')
+    #         # Fill areas above and below zero
+    #         self.grid2_ax.fill_between(price_range, total_payoff, 0, 
+    #                                  where=(total_payoff >= 0), 
+    #                                  color='green', alpha=0.3, label='Profit Zone')
+    #         self.grid2_ax.fill_between(price_range, total_payoff, 0, 
+    #                                  where=(total_payoff < 0), 
+    #                                  color='red', alpha=0.3, label='Loss Zone')
             
-            # Set labels and title
-            self.grid2_ax.set_xlabel('Underlying Price (₹)', fontsize=12)
-            self.grid2_ax.set_ylabel('Profit/Loss (₹)', fontsize=12)
-            self.grid2_ax.set_title(f'Open Trades Payoff - {len(open_trades)} Trades', fontsize=14, fontweight='bold')
+    #         # Set labels and title
+    #         self.grid2_ax.set_xlabel('Underlying Price (₹)', fontsize=12)
+    #         self.grid2_ax.set_ylabel('Profit/Loss (₹)', fontsize=12)
+    #         self.grid2_ax.set_title(f'Open Trades Payoff - {len(open_trades)} Trades', fontsize=14, fontweight='bold')
             
-            # Add legend
-            # self.grid2_ax.legend(loc='upper left')
+    #         # Add legend
+    #         # self.grid2_ax.legend(loc='upper left')
             
-            # Format axes
-            # self.grid2_ax.grid(True, alpha=0.3)
+    #         # Format axes
+    #         # self.grid2_ax.grid(True, alpha=0.3)
             
-            # Store trade details for hover functionality
-            self._current_open_trades = trade_details
-            self._current_spot_price = spot_price
+    #         # Store trade details for hover functionality
+    #         self._current_open_trades = trade_details
+    #         self._current_spot_price = spot_price
             
-            # Store data for live updates
-            self._current_payoff_data = {
-                "price_range": price_range,
-                "payoffs": total_payoff
-            }
-            self.grid2_fig = self.grid2_ax.figure if hasattr(self, 'grid2_ax') else None
+    #         # Store data for live updates
+    #         self._current_payoff_data = {
+    #             "price_range": price_range,
+    #             "payoffs": total_payoff
+    #         }
+    #         self.grid2_fig = self.grid2_ax.figure if hasattr(self, 'grid2_ax') else None
             
-            # Add hover functionality
-            self._add_open_trades_hover()
+    #         # Add hover functionality
+    #         self._add_open_trades_hover()
             
-            # Refresh the chart
-            self.logger.info("Refreshing chart display...")
-            try:
-                if hasattr(self, 'grid2_canvas') and self.grid2_canvas is not None:
-                    self.logger.info("Using grid2_canvas for refresh")
-                    self.grid2_canvas.draw()
-                    # Force update the canvas
-                    self.grid2_canvas.flush_events()
-                    self.logger.info("Grid2 canvas refreshed and flushed")
-                else:
-                    self.logger.info("Using main canvas for refresh")
-                    self.canvas.draw()
-            except Exception as refresh_error:
-                self.logger.error(f"Error refreshing canvas: {refresh_error}")
-                # Try to reinitialize the canvas
-                try:
-                    self._initialize_grid2_axes()
-                    if hasattr(self, 'grid2_canvas') and self.grid2_canvas is not None:
-                        self.grid2_canvas.draw()
-                        self.logger.info("Canvas reinitialized and refreshed")
-                except Exception as reinit_error:
-                    self.logger.error(f"Error reinitializing canvas: {reinit_error}")
+    #         # Refresh the chart
+    #         self.logger.info("Refreshing chart display...")
+    #         try:
+    #             if hasattr(self, 'grid2_canvas') and self.grid2_canvas is not None:
+    #                 self.logger.info("Using grid2_canvas for refresh")
+    #                 self.grid2_canvas.draw()
+    #                 # Force update the canvas
+    #                 self.grid2_canvas.flush_events()
+    #                 self.logger.info("Grid2 canvas refreshed and flushed")
+    #             else:
+    #                 self.logger.info("Using main canvas for refresh")
+    #                 self.canvas.draw()
+    #         except Exception as refresh_error:
+    #             self.logger.error(f"Error refreshing canvas: {refresh_error}")
+    #             # Try to reinitialize the canvas
+    #             try:
+    #                 self._initialize_grid2_axes()
+    #                 if hasattr(self, 'grid2_canvas') and self.grid2_canvas is not None:
+    #                     self.grid2_canvas.draw()
+    #                     self.logger.info("Canvas reinitialized and refreshed")
+    #             except Exception as reinit_error:
+    #                 self.logger.error(f"Error reinitializing canvas: {reinit_error}")
             
-            # Force update the frame
-            self.grid2_frame.update_idletasks()
+    #         # Force update the frame
+    #         self.grid2_frame.update_idletasks()
             
-            # Additional debugging
-            try:
-                if hasattr(self, 'grid2_canvas') and self.grid2_canvas is not None:
-                    canvas_widget = self.grid2_canvas.get_tk_widget()
-                    self.logger.info(f"Canvas widget visible: {canvas_widget.winfo_viewable()}")
-                    self.logger.info(f"Canvas widget size: {canvas_widget.winfo_width()}x{canvas_widget.winfo_height()}")
-                    self.logger.info(f"Grid2 frame size: {self.grid2_frame.winfo_width()}x{self.grid2_frame.winfo_height()}")
-            except Exception as debug_error:
-                self.logger.warning(f"Error in debug logging: {debug_error}")
+    #         # Additional debugging
+    #         try:
+    #             if hasattr(self, 'grid2_canvas') and self.grid2_canvas is not None:
+    #                 canvas_widget = self.grid2_canvas.get_tk_widget()
+    #                 self.logger.info(f"Canvas widget visible: {canvas_widget.winfo_viewable()}")
+    #                 self.logger.info(f"Canvas widget size: {canvas_widget.winfo_width()}x{canvas_widget.winfo_height()}")
+    #                 self.logger.info(f"Grid2 frame size: {self.grid2_frame.winfo_width()}x{self.grid2_frame.winfo_height()}")
+    #         except Exception as debug_error:
+    #             self.logger.warning(f"Error in debug logging: {debug_error}")
             
-            self.logger.info(f"Successfully displayed open trades payoff for {len(open_trades)} trades")
+    #         self.logger.info(f"Successfully displayed open trades payoff for {len(open_trades)} trades")
             
-        except Exception as e:
-            self.logger.error(f"Error displaying open trades payoff: {e}")
-            self.display_error_message(f"Failed to display open trades payoff: {e}")
+    #     except Exception as e:
+    #         self.logger.error(f"Error displaying open trades payoff: {e}")
+    #         self.display_error_message(f"Failed to display open trades payoff: {e}")
     
     def _add_open_trades_hover(self):
         """Add hover functionality for open trades payoff chart"""
@@ -2787,36 +2787,7 @@ Current P&L: ₹{payoff_data["current_payoff"]:.0f}"""
             self.logger.error(f"Error adding open trades hover functionality: {e}")
     
     def _refresh_chart_display(self):
-        """Refresh the chart display based on current open trades"""
-        try:
-            # Check if we have access to the main app to refresh the chart
-            if hasattr(self, '_main_app') and self._main_app:
-                # Trigger chart refresh through main app
-                self._main_app._display_appropriate_chart()
-            else:
-                # Fallback: try to refresh directly
-                from trade_database import TradeDatabase
-                db = TradeDatabase("trades.db")
-                open_trades = db.get_open_trades()
-                
-                if open_trades:
-                    # Get current spot price
-                    primary_instrument = list(self._main_app.instruments[self._main_app.broker_type].keys())[0]
-                    spot_price = self._main_app.datawarehouse.get_latest_price(primary_instrument)
-                    if spot_price is None:
-                        spot_price = 250
-
-                    payoff_data = self.strategy_manager.calculate_trade_payoff(open_trades, spot_price)
-                    self.chart_app.display_trade_payoff_graph(open_trades, spot_price, payoff_data)
-                    self.logger.info(f"Displayed Iron Condor strategy in Grid 2 with spot price: {spot_price}")
-                    
-                    self.display_open_trades_payoff(open_trades, spot_price)
-                else:
-                    # No open trades, display Iron Condor strategy
-                    self._main_app._display_trade_payoff_graph()
-                    
-        except Exception as e:
-            self.logger.error(f"Error refreshing chart display: {e}")
+        self._main_app._display_appropriate_chart()
     
     def _add_hover_update(self, fig, ax, trade, payoff_data, spot_price, strategy_text_obj):
         """Add hover functionality to update existing strategy details text"""
