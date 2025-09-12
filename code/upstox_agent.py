@@ -320,7 +320,186 @@ class UpstoxAgent(BrokerAgent):
         self.broker.fetch_instruments()
 
     def fetch_positions(self):
-        self.broker.fetch_positions()
+        """
+        Fetch current positions from Upstox API using the Portfolio API
+        
+        This method calls the Upstox Get Positions API endpoint:
+        https://upstox.com/developer/api-documentation/get-positions/
+        
+        Returns:
+            List[Dict]: List of position data from Upstox API with the following structure:
+                - exchange: Exchange name (NSE, BSE, NFO, MCX, CDS)
+                - trading_symbol: Trading symbol of the instrument
+                - quantity: Current position quantity
+                - average_price: Average price of the position
+                - last_price: Last traded price
+                - pnl: Profit and loss
+                - unrealised: Unrealised P&L
+                - realised: Realised P&L
+                - value: Net value of the position
+                - product: Product type (I=Intraday, D=Delivery, CO=Cover Order)
+                - instrument_token: Unique instrument identifier
+                - multiplier: Lot size multiplier
+                - And many more fields as per Upstox API documentation
+                
+        Raises:
+            ApiException: If the API call fails
+            Exception: For other unexpected errors
+        """
+        try:
+            # Create API client with configuration
+            api_client = upstox_client.ApiClient(configuration=self.configuration)
+            
+            # Initialize Portfolio API
+            api_instance = upstox_client.PortfolioApi(api_client)
+            
+            # Call the get positions API
+            api_response = api_instance.get_positions(api_version)
+            
+            if api_response.status == "success":
+                logger.info(f"Successfully fetched {len(api_response.data)} positions")
+                
+                # Convert PositionData objects to dictionaries for easier handling
+                positions_list = []
+                for pos in api_response.data:
+                    if hasattr(pos, '__dict__'):
+                        # Convert object to dictionary
+                        pos_dict = {}
+                        for key, value in pos.__dict__.items():
+                            pos_dict[key] = value
+                        positions_list.append(pos_dict)
+                    else:
+                        # Already a dictionary
+                        positions_list.append(pos)
+                
+                return positions_list
+            else:
+                logger.error(f"Failed to fetch positions: {api_response}")
+                return []
+                
+        except ApiException as e:
+            logger.error(f"Exception when calling PortfolioApi->get_positions: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"Unexpected error fetching positions: {e}")
+            return []
+    
+    def get_formatted_positions(self):
+        """
+        Fetch and format positions data for easier consumption
+        
+        This method calls fetch_positions() and formats the data with additional
+        calculated fields and summary statistics for easier analysis.
+        
+        Returns:
+            Dict: Formatted positions data with the following structure:
+                {
+                    "status": "success" or "error",
+                    "total_positions": int,
+                    "positions": [
+                        {
+                            "trading_symbol": str,
+                            "exchange": str,
+                            "quantity": int,
+                            "average_price": float,
+                            "last_price": float,
+                            "pnl": float,
+                            "unrealised": float,
+                            "realised": float,
+                            "value": float,
+                            "product": str,
+                            "instrument_token": str,
+                            "multiplier": float,
+                            "close_price": float,
+                            "buy_price": float,
+                            "sell_price": float,
+                            "current_value": float,  # Calculated: quantity * last_price * multiplier
+                            "day_quantity": int,     # Calculated: day_buy_quantity - day_sell_quantity
+                            "overnight_quantity": int
+                        }
+                    ],
+                    "summary": {
+                        "total_pnl": float,
+                        "total_unrealised": float,
+                        "total_realised": float,
+                        "total_value": float
+                    }
+                }
+        """
+        try:
+            positions_data = self.fetch_positions()
+            
+            if not positions_data:
+                return {
+                    "status": "success",
+                    "total_positions": 0,
+                    "positions": [],
+                    "summary": {
+                        "total_pnl": 0.0,
+                        "total_unrealised": 0.0,
+                        "total_realised": 0.0,
+                        "total_value": 0.0
+                    }
+                }
+            
+            # Calculate summary statistics
+            total_pnl = sum(pos.get('pnl', 0) for pos in positions_data)
+            total_unrealised = sum(pos.get('unrealised', 0) for pos in positions_data)
+            total_realised = sum(pos.get('realised', 0) for pos in positions_data)
+            total_value = sum(pos.get('value', 0) for pos in positions_data)
+            
+            # Format positions with additional calculated fields
+            formatted_positions = []
+            for pos in positions_data:
+                formatted_pos = {
+                    "trading_symbol": pos.get('trading_symbol', ''),
+                    "exchange": pos.get('exchange', ''),
+                    "quantity": pos.get('quantity', 0),
+                    "average_price": pos.get('average_price', 0),
+                    "last_price": pos.get('last_price', 0),
+                    "pnl": pos.get('pnl', 0),
+                    "unrealised": pos.get('unrealised', 0),
+                    "realised": pos.get('realised', 0),
+                    "value": pos.get('value', 0),
+                    "product": pos.get('product', ''),
+                    "instrument_token": pos.get('instrument_token', ''),
+                    "multiplier": pos.get('multiplier', 1.0),
+                    "close_price": pos.get('close_price', 0),
+                    "buy_price": pos.get('buy_price', 0),
+                    "sell_price": pos.get('sell_price', 0),
+                    # Additional calculated fields
+                    "current_value": pos.get('quantity', 0) * pos.get('last_price', 0) * pos.get('multiplier', 1.0),
+                    "day_quantity": pos.get('day_buy_quantity', 0) - pos.get('day_sell_quantity', 0),
+                    "overnight_quantity": pos.get('overnight_quantity', 0)
+                }
+                formatted_positions.append(formatted_pos)
+            
+            return {
+                "status": "success",
+                "total_positions": len(formatted_positions),
+                "positions": formatted_positions,
+                "summary": {
+                    "total_pnl": round(total_pnl, 2),
+                    "total_unrealised": round(total_unrealised, 2),
+                    "total_realised": round(total_realised, 2),
+                    "total_value": round(total_value, 2)
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error formatting positions: {e}")
+            return {
+                "status": "error",
+                "error": str(e),
+                "total_positions": 0,
+                "positions": [],
+                "summary": {
+                    "total_pnl": 0.0,
+                    "total_unrealised": 0.0,
+                    "total_realised": 0.0,
+                    "total_value": 0.0
+                }
+            }
 
     def fetch_quotes(self, symbol = "NSE_INDEX|Nifty 50", interval = "I1"):
         try:

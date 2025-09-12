@@ -3223,9 +3223,23 @@ Max Loss: ₹{max_loss:,.0f}"""
             table_frame = ttk.LabelFrame(main_frame, text="Option Chain Data", padding=5)
             table_frame.pack(fill=tk.BOTH, expand=True)
             
+            # Create custom style for treeview with larger font
+            style = ttk.Style()
+            style.configure("Custom.Treeview", font=("Arial", 14))  # Increased font size for taller rows
+            style.configure("Custom.Treeview.Heading", font=("Arial", 14, "bold"))
+            
             # Create treeview for option chain table
             columns = ("Put LTP", "Strike Price", "Call LTP")
-            self.chain_tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=20)
+            self.chain_tree = ttk.Treeview(table_frame, columns=columns, show="headings", 
+                                         height=20, style="Custom.Treeview")
+            
+            # Try to increase row height using different methods
+            try:
+                # Method 1: Configure the treeview with a larger font that naturally increases row height
+                # Note: ttk.Treeview doesn't support direct font configuration, so we rely on the style
+                self.logger.debug("Applied larger font (14px) via style configuration")
+            except Exception as e:
+                self.logger.debug(f"Could not apply larger font: {e}")
             
             # Configure columns
             self.chain_tree.heading("Put LTP", text="Put LTP")
@@ -3236,6 +3250,14 @@ Max Loss: ₹{max_loss:,.0f}"""
             self.chain_tree.column("Put LTP", width=100, anchor="center")
             self.chain_tree.column("Strike Price", width=120, anchor="center")
             self.chain_tree.column("Call LTP", width=100, anchor="center")
+            
+            # Configure tags for alternating rows and highlighting
+            self.chain_tree.tag_configure("even", background="white")  # White background for even rows
+            self.chain_tree.tag_configure("odd", background="#F8F8F8")  # Very light gray for odd rows
+            self.chain_tree.tag_configure("nearest", background="#FFE4B5")  # Light orange for nearest strike
+            
+            # Increase row height by adding padding to each row
+            self._increase_treeview_row_height()
             
             # Add scrollbar
             scrollbar = ttk.Scrollbar(table_frame, orient=tk.VERTICAL, command=self.chain_tree.yview)
@@ -3316,7 +3338,22 @@ Max Loss: ₹{max_loss:,.0f}"""
             # Populate table with option chain data
             strike_prices = sorted(formatted_data["strike_prices"].keys(), key=lambda x: float(x))
             
-            for strike_price in strike_prices:
+            # Get current spot price for nearest strike calculation
+            spot_price = formatted_data.get("underlying_spot_price", 0)
+            nearest_strike = None
+            
+            if spot_price > 0:
+                # Get nearest strikes using Utils
+                from trade_utils import Utils
+                nearest_strikes = Utils.get_nearest_strikes(spot_price, count=1)
+                if nearest_strikes:
+                    nearest_strike = float(nearest_strikes[0])
+                    self.logger.debug(f"Calculated nearest strike: {nearest_strike} for spot price: {spot_price}")
+
+            counter = 0
+            should_start_counting = False
+
+            for i, strike_price in enumerate(strike_prices):
                 strike_data = formatted_data["strike_prices"][strike_price]
                 
                 # Get LTP values
@@ -3329,25 +3366,95 @@ Max Loss: ₹{max_loss:,.0f}"""
                 if strike_data.get("call_options"):
                     call_ltp = f"₹{strike_data['call_options'].market_data.ltp:.2f}"
                 
-                # Insert row
-                self.chain_tree.insert("", "end", values=(
+                # Determine tags for this row (alternating colors)
+                tags = ["even" if i % 2 == 0 else "odd"]  # Alternating row colors
+                if nearest_strike and strike_price == nearest_strike:
+                    tags = ["nearest"]  # Override with nearest tag for highlighting
+                
+                # Insert row with tags
+                item_id = self.chain_tree.insert("", "end", values=(
                     put_ltp,
                     f"₹{strike_price}",
                     call_ltp
-                ))
+                ), tags=tags)
+                
+                # Highlight the nearest strike price row
+                if nearest_strike and float(strike_price) == nearest_strike:
+                    self.chain_tree.set(item_id, "Strike Price", f"₹{strike_price} ← NEAREST")
+                    self.chain_tree.selection_set(item_id)
+                    should_start_counting = True
+                
+                if should_start_counting:
+                    counter += 1
+
+                if counter == 10:
+                    self.nearest_strike_item = item_id
+                    should_start_counting = False
+                    counter = 0
+
+
+            # Auto-scroll to nearest strike price
+            if hasattr(self, 'nearest_strike_item') and self.nearest_strike_item:
+                try:
+                    # Schedule the scroll after a short delay to ensure tree is fully rendered
+                    chain_window.after(100, self._scroll_to_nearest_strike)
+                except Exception as e:
+                    self.logger.warning(f"Could not schedule scroll to nearest strike: {e}")
             
             # Update status
             total_strikes = len(strike_prices)
             from datetime import datetime
-            self.chain_status_label.config(text=f"Loaded {total_strikes} strike prices | Last updated: {datetime.now().strftime('%H:%M:%S')}")
+            status_text = f"Loaded {total_strikes} strike prices | Last updated: {datetime.now().strftime('%H:%M:%S')}"
+            if nearest_strike:
+                status_text += f" | Nearest strike: ₹{nearest_strike}"
+            self.chain_status_label.config(text=status_text)
             
         except Exception as e:
             self.logger.error(f"Error loading option chain data: {e}")
             self.chain_status_label.config(text=f"Error: {e}")
     
+    def _increase_treeview_row_height(self):
+        """Increase the row height of the treeview by adding padding"""
+        try:
+            # The row height is primarily controlled by the font size in the style
+            # We've already increased the font size to 14px in the style configuration
+            # This should naturally increase the row height
+            
+            # Additional method: Try to configure padding in the style
+            style = ttk.Style()
+            try:
+                # Configure padding for treeview items
+                style.configure("Custom.Treeview.Item", padding=(0, 3, 0, 3))  # Top and bottom padding
+                style.map("Custom.Treeview.Item", 
+                         padding=[("selected", (0, 3, 0, 3)),
+                                 ("active", (0, 3, 0, 3))])
+            except Exception as e:
+                self.logger.debug(f"Could not configure item padding: {e}")
+                
+            self.logger.debug("Applied row height increase via font size and padding")
+            
+        except Exception as e:
+            self.logger.warning(f"Could not increase treeview row height: {e}")
+
+    def _scroll_to_nearest_strike(self):
+        """Scroll to the nearest strike price in the option chain tree"""
+        try:
+            if hasattr(self, 'nearest_strike_item') and self.nearest_strike_item:
+                # Select and scroll to the nearest strike price row
+                self.chain_tree.see(self.nearest_strike_item)
+                self.chain_tree.focus(self.nearest_strike_item)
+                self.logger.debug(f"Auto-scrolled to nearest strike item: {self.nearest_strike_item}")
+        except Exception as e:
+            self.logger.warning(f"Could not scroll to nearest strike: {e}")
+
     def _refresh_option_chain(self, chain_window):
         """Refresh option chain data"""
         try:
+            # Clear existing data first
+            for item in self.chain_tree.get_children():
+                self.chain_tree.delete(item)
+            
+            # Reload data with proper styling
             self._load_option_chain_data(chain_window)
         except Exception as e:
             self.logger.error(f"Error refreshing option chain: {e}")
@@ -3359,7 +3466,7 @@ Max Loss: ₹{max_loss:,.0f}"""
             # Create new window
             positions_window = tk.Toplevel(self.root)
             positions_window.title("Current Positions")
-            positions_window.geometry("800x500")
+            positions_window.geometry("1000x600")
             positions_window.resizable(True, True)
             
             # Center the window
@@ -3375,51 +3482,48 @@ Max Loss: ₹{max_loss:,.0f}"""
                                   font=("Arial", 16, "bold"))
             title_label.pack(pady=(0, 10))
             
+            # Control frame with refresh button
+            control_frame = ttk.Frame(main_frame)
+            control_frame.pack(fill=tk.X, pady=(0, 10))
+            
+            refresh_button = ttk.Button(control_frame, text="🔄 Refresh Positions", 
+                                      command=lambda: self._refresh_positions_window(positions_window, tree, summary_label))
+            refresh_button.pack(side=tk.LEFT)
+            
+            # Status label
+            status_label = ttk.Label(control_frame, text="Loading positions...", 
+                                   font=("Arial", 10), foreground="blue")
+            status_label.pack(side=tk.RIGHT)
+            
             # Positions summary frame
             summary_frame = ttk.LabelFrame(main_frame, text="Positions Summary", padding=10)
             summary_frame.pack(fill=tk.X, pady=(0, 10))
             
-            # Get current positions from strategy manager
-            if hasattr(self, 'strategy_manager') and self.strategy_manager:
-                try:
-                    open_positions = self.strategy_manager.get_open_positions()
-                    if open_positions:
-                        summary_text = f"Total Open Positions: {len(open_positions)}"
-                        for i, trade in enumerate(open_positions, 1):
-                            summary_text += f"\n{i}. {trade.trade_id} - {trade.strategy_name} ({trade.status.value})"
-                    else:
-                        summary_text = "No open positions found"
-                except Exception as e:
-                    summary_text = f"Error fetching positions: {e}"
-            else:
-                summary_text = "Strategy manager not available"
-            
-            summary_label = ttk.Label(summary_frame, text=summary_text, font=("Arial", 10))
+            # Initialize summary label
+            summary_label = ttk.Label(summary_frame, text="Loading...", font=("Arial", 10))
             summary_label.pack(anchor=tk.W)
             
             # Positions details frame
             details_frame = ttk.LabelFrame(main_frame, text="Position Details", padding=10)
             details_frame.pack(fill=tk.BOTH, expand=True)
             
-            # Create treeview for positions
-            columns = ("Trade ID", "Strategy", "Status", "Underlying", "Legs", "P&L")
+            # Create treeview for positions with new columns
+            columns = ("Name", "Quantity", "Average Price", "Last Price", "Profit/Loss")
             tree = ttk.Treeview(details_frame, columns=columns, show="headings", height=15)
             
             # Configure columns
-            tree.heading("Trade ID", text="Trade ID")
-            tree.heading("Strategy", text="Strategy")
-            tree.heading("Status", text="Status")
-            tree.heading("Underlying", text="Underlying")
-            tree.heading("Legs", text="Legs")
-            tree.heading("P&L", text="P&L")
+            tree.heading("Name", text="Name (Trading Symbol)")
+            tree.heading("Quantity", text="Quantity")
+            tree.heading("Average Price", text="Average Price")
+            tree.heading("Last Price", text="Last Price")
+            tree.heading("Profit/Loss", text="Profit/Loss")
             
-            # Configure column widths
-            tree.column("Trade ID", width=120)
-            tree.column("Strategy", width=150)
-            tree.column("Status", width=80)
-            tree.column("Underlying", width=120)
-            tree.column("Legs", width=60)
-            tree.column("P&L", width=100)
+            # Configure column widths and alignment
+            tree.column("Name", width=200, anchor="center")
+            tree.column("Quantity", width=100, anchor="center")
+            tree.column("Average Price", width=120, anchor="center")
+            tree.column("Last Price", width=120, anchor="center")
+            tree.column("Profit/Loss", width=120, anchor="center")
             
             # Add scrollbar
             scrollbar = ttk.Scrollbar(details_frame, orient=tk.VERTICAL, command=tree.yview)
@@ -3429,24 +3533,8 @@ Max Loss: ₹{max_loss:,.0f}"""
             tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
             
-            # Populate positions data
-            if hasattr(self, 'strategy_manager') and self.strategy_manager:
-                try:
-                    open_positions = self.strategy_manager.get_open_positions()
-                    for trade in open_positions:
-                        # Calculate P&L (placeholder - would need current spot price)
-                        pnl = "N/A"  # Could be calculated with current spot price
-                        
-                        tree.insert("", "end", values=(
-                            trade.trade_id,
-                            trade.strategy_name,
-                            trade.status.value,
-                            trade.underlying_instrument,
-                            len(trade.legs),
-                            pnl
-                        ))
-                except Exception as e:
-                    tree.insert("", "end", values=("Error", "Error", "Error", str(e), "0", "N/A"))
+            # Fetch and populate positions data
+            self._refresh_positions_window(positions_window, tree, summary_label, status_label)
             
             # Close button
             close_button = ttk.Button(main_frame, text="Close", 
@@ -3457,6 +3545,143 @@ Max Loss: ₹{max_loss:,.0f}"""
             self.logger.error(f"Error showing positions window: {e}")
             import tkinter.messagebox as msgbox
             msgbox.showerror("Error", f"Failed to open positions window: {e}")
+    
+    def _refresh_positions_window(self, positions_window, tree, summary_label, status_label=None):
+        """Refresh positions data from Upstox API"""
+        try:
+            # Update status
+            if status_label:
+                status_label.config(text="Fetching positions from server...", foreground="blue")
+            
+            # Clear existing data
+            for item in tree.get_children():
+                tree.delete(item)
+            
+            # Check if we have access to the agent
+            if not hasattr(self, '_current_agent') or not self._current_agent:
+                summary_text = "❌ No trading agent available"
+                if status_label:
+                    status_label.config(text="Error: No agent available", foreground="red")
+                summary_label.config(text=summary_text)
+                return
+            
+            # Check if agent has fetch_positions method
+            if not hasattr(self._current_agent, 'fetch_positions'):
+                summary_text = "❌ Agent does not support position fetching"
+                if status_label:
+                    status_label.config(text="Error: Agent not supported", foreground="red")
+                summary_label.config(text=summary_text)
+                return
+            
+            # Fetch positions from Upstox API
+            try:
+                positions_data = self._current_agent.fetch_positions()
+                
+                if not positions_data:
+                    summary_text = "ℹ️ No positions found"
+                    if status_label:
+                        status_label.config(text="No positions found", foreground="orange")
+                    summary_label.config(text=summary_text)
+                    return
+                
+                # Debug: Log the structure of the first position
+                if positions_data and len(positions_data) > 0:
+                    first_pos = positions_data[0]
+                    self.logger.info(f"Position data type: {type(first_pos)}")
+                    if hasattr(first_pos, '__dict__'):
+                        self.logger.info(f"Position attributes: {list(first_pos.__dict__.keys())}")
+                        # Try to get some sample values
+                        try:
+                            sample_symbol = getattr(first_pos, 'trading_symbol', 'NOT_FOUND')
+                            sample_quantity = getattr(first_pos, 'quantity', 'NOT_FOUND')
+                            self.logger.info(f"Sample trading_symbol: {sample_symbol}")
+                            self.logger.info(f"Sample quantity: {sample_quantity}")
+                        except Exception as debug_error:
+                            self.logger.error(f"Debug error: {debug_error}")
+                    else:
+                        self.logger.info(f"Position is not an object, treating as dict")
+                
+                # Calculate totals
+                total_pnl = 0.0
+                total_unrealised = 0.0
+                total_realised = 0.0
+                
+                # Populate tree with position data
+                for pos in positions_data:
+                    try:
+                        # Extract required fields - positions should now be dictionaries
+                        trading_symbol = (pos.get('_trading_symbol') or 
+                                        pos.get('_tradingsymbol') or 'N/A')
+                        quantity = pos.get('_quantity', 0) or 0
+                        average_price = pos.get('_average_price', 0) or 0
+                        last_price = pos.get('_last_price', 0) or 0
+                        pnl = pos.get('_pnl', 0) or 0
+                        unrealised = pos.get('_unrealised', 0) or 0
+                        realised = pos.get('_realised', 0)
+                            
+                    except Exception as attr_error:
+                        self.logger.error(f"Error extracting position data: {attr_error}")
+                        # Skip this position if we can't extract data
+                        continue
+                    
+                    # Calculate total P&L (realised + unrealised)
+                    total_pnl_value = realised + unrealised
+                    
+                    # Update totals
+                    total_pnl += pnl
+                    total_unrealised += unrealised
+                    total_realised += realised
+                    
+                    # Format values for display
+                    avg_price_str = f"₹{average_price:.2f}" if average_price else "N/A"
+                    last_price_str = f"₹{last_price:.2f}" if last_price else "N/A"
+                    pnl_str = f"₹{total_pnl_value:.2f}"
+                    
+                    # Color code P&L
+                    if total_pnl_value > 0:
+                        pnl_str = f"🟢 {pnl_str}"
+                    elif total_pnl_value < 0:
+                        pnl_str = f"🔴 {pnl_str}"
+                    else:
+                        pnl_str = f"⚪ {pnl_str}"
+                    
+                    # Insert into tree
+                    tree.insert("", "end", values=(
+                        trading_symbol,
+                        quantity,
+                        avg_price_str,
+                        last_price_str,
+                        pnl_str
+                    ))
+                
+                # Update summary
+                summary_text = f"📊 Total Positions: {len(positions_data)}\n"
+                summary_text += f"💰 Total P&L: ₹{total_pnl:.2f}\n"
+                summary_text += f"📈 Unrealised: ₹{total_unrealised:.2f}\n"
+                summary_text += f"✅ Realised: ₹{total_realised:.2f}\n"
+                
+                summary_label.config(text=summary_text)
+                
+                if status_label:
+                    status_label.config(text=f"✅ Loaded {len(positions_data)} positions", foreground="green")
+                
+                self.logger.info(f"Successfully loaded {len(positions_data)} positions from Upstox API")
+                
+            except Exception as api_error:
+                error_msg = f"❌ Error fetching positions: {str(api_error)}"
+                summary_text = error_msg
+                if status_label:
+                    status_label.config(text="Error fetching positions", foreground="red")
+                summary_label.config(text=summary_text)
+                self.logger.error(f"Error fetching positions from Upstox API: {api_error}")
+                
+        except Exception as e:
+            error_msg = f"❌ Unexpected error: {str(e)}"
+            summary_text = error_msg
+            if status_label:
+                status_label.config(text="Unexpected error", foreground="red")
+            summary_label.config(text=summary_text)
+            self.logger.error(f"Unexpected error in _refresh_positions_window: {e}")
     
     def _place_iron_condor_orders(self, trade_window, trade):
         """Place all Iron Condor orders using Upstox API"""
