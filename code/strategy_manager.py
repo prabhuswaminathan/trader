@@ -216,13 +216,12 @@ class StrategyManager:
             
             # Calculate payoffs
             payoffs = []
-            lot_size = 75  # NIFTY lot size
             for price in price_range:
                 total_payoff = 0
                 for leg in payoff_legs:
                     payoff = self._calculate_leg_payoff(price, leg)
                     total_payoff += payoff
-                payoffs.append(total_payoff * lot_size)
+                payoffs.append(total_payoff)
             
             payoffs = np.array(payoffs)
             
@@ -304,13 +303,12 @@ class StrategyManager:
             
             # Calculate combined payoffs
             payoffs = []
-            lot_size = 75  # NIFTY lot size
             
             for price in price_range:
                 total_payoff = 0
                 for leg in all_legs:
                     leg_payoff = self._calculate_leg_payoff(price, leg)
-                    total_payoff += leg_payoff * leg["quantity"] * lot_size
+                    total_payoff += leg_payoff * leg["quantity"]
                 payoffs.append(total_payoff)
             
             payoffs = np.array(payoffs)

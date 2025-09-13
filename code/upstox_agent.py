@@ -361,12 +361,26 @@ class UpstoxAgent(BrokerAgent):
                 
                 # Convert PositionData objects to dictionaries for easier handling
                 positions_list = []
-                for pos in api_response.data:
+                for i, pos in enumerate(api_response.data):
                     if hasattr(pos, '__dict__'):
                         # Convert object to dictionary
                         pos_dict = {}
                         for key, value in pos.__dict__.items():
                             pos_dict[key] = value
+                        
+                        # Debug logging for first position to check available attributes
+                        if i == 0:
+                            logger.debug(f"First position attributes: {list(pos_dict.keys())}")
+                            if 'instrument_token' in pos_dict:
+                                logger.debug(f"instrument_token found: {pos_dict['instrument_token']}")
+                            else:
+                                logger.warning("instrument_token not found in position data")
+                                # Check for alternative names
+                                alt_names = ['instrumentToken', 'instrument_key', 'token', 'key']
+                                for alt_name in alt_names:
+                                    if alt_name in pos_dict:
+                                        logger.info(f"Found alternative field '{alt_name}': {pos_dict[alt_name]}")
+                        
                         positions_list.append(pos_dict)
                     else:
                         # Already a dictionary
@@ -450,7 +464,13 @@ class UpstoxAgent(BrokerAgent):
             
             # Format positions with additional calculated fields
             formatted_positions = []
-            for pos in positions_data:
+            for i, pos in enumerate(positions_data):
+                # Debug logging for first position
+                if i == 0:
+                    logger.debug(f"Processing first position: {pos.get('trading_symbol', 'Unknown')}")
+                    logger.debug(f"Available keys: {list(pos.keys())}")
+                    instrument_token = pos.get('instrument_token', '') or pos.get('instrumentToken', '') or pos.get('instrument_key', '')
+                    logger.debug(f"Extracted instrument_token: '{instrument_token}'")
                 formatted_pos = {
                     "trading_symbol": pos.get('trading_symbol', ''),
                     "exchange": pos.get('exchange', ''),
@@ -462,7 +482,7 @@ class UpstoxAgent(BrokerAgent):
                     "realised": pos.get('realised', 0),
                     "value": pos.get('value', 0),
                     "product": pos.get('product', ''),
-                    "instrument_token": pos.get('instrument_token', ''),
+                    "instrument_token": pos.get('instrument_token', '') or pos.get('instrumentToken', '') or pos.get('instrument_key', ''),
                     "multiplier": pos.get('multiplier', 1.0),
                     "close_price": pos.get('close_price', 0),
                     "buy_price": pos.get('buy_price', 0),

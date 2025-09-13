@@ -3508,7 +3508,7 @@ Max Loss: ₹{max_loss:,.0f}"""
             details_frame.pack(fill=tk.BOTH, expand=True)
             
             # Create treeview for positions with new columns
-            columns = ("Name", "Quantity", "Average Price", "Last Price", "Profit/Loss")
+            columns = ("Name", "Quantity", "Average Price", "Last Price", "Profit/Loss", "Action")
             tree = ttk.Treeview(details_frame, columns=columns, show="headings", height=15)
             
             # Configure columns
@@ -3517,6 +3517,7 @@ Max Loss: ₹{max_loss:,.0f}"""
             tree.heading("Average Price", text="Average Price")
             tree.heading("Last Price", text="Last Price")
             tree.heading("Profit/Loss", text="Profit/Loss")
+            tree.heading("Action", text="Action")
             
             # Configure column widths and alignment
             tree.column("Name", width=200, anchor="center")
@@ -3524,6 +3525,7 @@ Max Loss: ₹{max_loss:,.0f}"""
             tree.column("Average Price", width=120, anchor="center")
             tree.column("Last Price", width=120, anchor="center")
             tree.column("Profit/Loss", width=120, anchor="center")
+            tree.column("Action", width=120, anchor="center")
             
             # Add scrollbar
             scrollbar = ttk.Scrollbar(details_frame, orient=tk.VERTICAL, command=tree.yview)
@@ -3532,6 +3534,14 @@ Max Loss: ₹{max_loss:,.0f}"""
             # Pack treeview and scrollbar
             tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            # Bind click events to handle "Add Trade" button clicks
+            tree.bind("<Button-1>", lambda event: self._on_add_trade_click(event, tree, positions_window))
+            tree.bind("<Double-1>", lambda event: self._on_add_trade_click(event, tree, positions_window))
+            
+            # Bind hover events for visual feedback
+            tree.bind("<Motion>", lambda event: self._on_tree_hover(event, tree))
+            tree.bind("<Leave>", lambda event: self._on_tree_leave(event, tree))
             
             # Fetch and populate positions data
             self._refresh_positions_window(positions_window, tree, summary_label, status_label)
@@ -3549,28 +3559,54 @@ Max Loss: ₹{max_loss:,.0f}"""
     def _refresh_positions_window(self, positions_window, tree, summary_label, status_label=None):
         """Refresh positions data from Upstox API"""
         try:
+            # Validate parameters
+            if not tree:
+                self.logger.error("Tree widget is None, cannot refresh")
+                return
+            
             # Update status
             if status_label:
-                status_label.config(text="Fetching positions from server...", foreground="blue")
+                try:
+                    status_label.config(text="Fetching positions from server...", foreground="blue")
+                except Exception as e:
+                    self.logger.warning(f"Could not update status label: {e}")
             
             # Clear existing data
-            for item in tree.get_children():
-                tree.delete(item)
+            try:
+                for item in tree.get_children():
+                    tree.delete(item)
+            except Exception as e:
+                self.logger.warning(f"Could not clear tree data: {e}")
+                return
             
             # Check if we have access to the agent
             if not hasattr(self, '_current_agent') or not self._current_agent:
                 summary_text = "❌ No trading agent available"
                 if status_label:
-                    status_label.config(text="Error: No agent available", foreground="red")
-                summary_label.config(text=summary_text)
+                    try:
+                        status_label.config(text="Error: No agent available", foreground="red")
+                    except Exception as e:
+                        self.logger.warning(f"Could not update status label: {e}")
+                if summary_label:
+                    try:
+                        summary_label.config(text=summary_text)
+                    except Exception as e:
+                        self.logger.warning(f"Could not update summary label: {e}")
                 return
             
             # Check if agent has fetch_positions method
             if not hasattr(self._current_agent, 'fetch_positions'):
                 summary_text = "❌ Agent does not support position fetching"
                 if status_label:
-                    status_label.config(text="Error: Agent not supported", foreground="red")
-                summary_label.config(text=summary_text)
+                    try:
+                        status_label.config(text="Error: Agent not supported", foreground="red")
+                    except Exception as e:
+                        self.logger.warning(f"Could not update status label: {e}")
+                if summary_label:
+                    try:
+                        summary_label.config(text=summary_text)
+                    except Exception as e:
+                        self.logger.warning(f"Could not update summary label: {e}")
                 return
             
             # Fetch positions from Upstox API
@@ -3580,8 +3616,15 @@ Max Loss: ₹{max_loss:,.0f}"""
                 if not positions_data:
                     summary_text = "ℹ️ No positions found"
                     if status_label:
-                        status_label.config(text="No positions found", foreground="orange")
-                    summary_label.config(text=summary_text)
+                        try:
+                            status_label.config(text="No positions found", foreground="orange")
+                        except Exception as e:
+                            self.logger.warning(f"Could not update status label: {e}")
+                    if summary_label:
+                        try:
+                            summary_label.config(text=summary_text)
+                        except Exception as e:
+                            self.logger.warning(f"Could not update summary label: {e}")
                     return
                 
                 # Debug: Log the structure of the first position
@@ -3645,14 +3688,32 @@ Max Loss: ₹{max_loss:,.0f}"""
                     else:
                         pnl_str = f"⚪ {pnl_str}"
                     
+                    # Check if position exists in trade legs
+                    is_in_trade_legs = self._is_position_in_trade_legs(trading_symbol)
+                    
+                    # Create more button-like text
+                    if not is_in_trade_legs:
+                        action_text = "➕ Add Trade"
+                        action_display = "➕ Add Trade"
+                    else:
+                        action_text = "✅ In Trade"
+                        action_display = "✅ In Trade"
+                    
                     # Insert into tree
-                    tree.insert("", "end", values=(
+                    item = tree.insert("", "end", values=(
                         trading_symbol,
                         quantity,
                         avg_price_str,
                         last_price_str,
-                        pnl_str
+                        pnl_str,
+                        action_display
                     ))
+                    
+                    # Add tags for styling if needed
+                    if not is_in_trade_legs:
+                        tree.set(item, "Action", "➕ Add Trade")
+                    else:
+                        tree.set(item, "Action", "✅ In Trade")
                 
                 # Update summary
                 summary_text = f"📊 Total Positions: {len(positions_data)}\n"
@@ -3660,10 +3721,17 @@ Max Loss: ₹{max_loss:,.0f}"""
                 summary_text += f"📈 Unrealised: ₹{total_unrealised:.2f}\n"
                 summary_text += f"✅ Realised: ₹{total_realised:.2f}\n"
                 
-                summary_label.config(text=summary_text)
+                if summary_label:
+                    try:
+                        summary_label.config(text=summary_text)
+                    except Exception as e:
+                        self.logger.warning(f"Could not update summary label: {e}")
                 
                 if status_label:
-                    status_label.config(text=f"✅ Loaded {len(positions_data)} positions", foreground="green")
+                    try:
+                        status_label.config(text=f"✅ Loaded {len(positions_data)} positions", foreground="green")
+                    except Exception as e:
+                        self.logger.warning(f"Could not update status label: {e}")
                 
                 self.logger.info(f"Successfully loaded {len(positions_data)} positions from Upstox API")
                 
@@ -3671,17 +3739,466 @@ Max Loss: ₹{max_loss:,.0f}"""
                 error_msg = f"❌ Error fetching positions: {str(api_error)}"
                 summary_text = error_msg
                 if status_label:
-                    status_label.config(text="Error fetching positions", foreground="red")
-                summary_label.config(text=summary_text)
+                    try:
+                        status_label.config(text="Error fetching positions", foreground="red")
+                    except Exception as e:
+                        self.logger.warning(f"Could not update status label: {e}")
+                if summary_label:
+                    try:
+                        summary_label.config(text=summary_text)
+                    except Exception as e:
+                        self.logger.warning(f"Could not update summary label: {e}")
                 self.logger.error(f"Error fetching positions from Upstox API: {api_error}")
                 
         except Exception as e:
             error_msg = f"❌ Unexpected error: {str(e)}"
             summary_text = error_msg
             if status_label:
-                status_label.config(text="Unexpected error", foreground="red")
-            summary_label.config(text=summary_text)
+                try:
+                    status_label.config(text="Unexpected error", foreground="red")
+                except Exception as e:
+                    self.logger.warning(f"Could not update status label: {e}")
+            if summary_label:
+                try:
+                    summary_label.config(text=summary_text)
+                except Exception as e:
+                    self.logger.warning(f"Could not update summary label: {e}")
             self.logger.error(f"Unexpected error in _refresh_positions_window: {e}")
+    
+    def _is_position_in_trade_legs(self, trading_symbol: str) -> bool:
+        """Check if a position exists in any open trade legs"""
+        try:
+            # Get all open trades from strategy manager
+            if hasattr(self, 'strategy_manager') and self.strategy_manager:
+                open_trades = self.strategy_manager.get_open_positions()
+                
+                # Check each trade's legs
+                for trade in open_trades:
+                    for leg in trade.legs:
+                        # Check if the instrument matches (exact match or contains)
+                        if (leg.instrument == trading_symbol or 
+                            leg.instrument_name == trading_symbol or
+                            trading_symbol in leg.instrument or
+                            leg.instrument in trading_symbol):
+                            self.logger.info(f"Position '{trading_symbol}' found in trade leg: {leg.instrument}")
+                            return True
+                
+            # Also check if we have access to the main app's strategy manager
+            elif hasattr(self, '_main_app') and hasattr(self._main_app, 'strategy_manager'):
+                open_trades = self._main_app.strategy_manager.get_open_positions()
+                
+                # Check each trade's legs
+                for trade in open_trades:
+                    for leg in trade.legs:
+                        # Check if the instrument matches (exact match or contains)
+                        if (leg.instrument == trading_symbol or 
+                            leg.instrument_name == trading_symbol or
+                            trading_symbol in leg.instrument or
+                            leg.instrument in trading_symbol):
+                            self.logger.info(f"Position '{trading_symbol}' found in trade leg: {leg.instrument}")
+                            return True
+                
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error checking if position exists in trade legs: {e}")
+            return False
+    
+    def _on_add_trade_click(self, event, tree, positions_window):
+        """Handle Add Trade button clicks in the positions window"""
+        try:
+            # Get the item that was clicked
+            item = tree.identify_row(event.y)
+            if not item:
+                return
+            
+            # Select the item for visual feedback
+            tree.selection_set(item)
+            
+            # Get the values of the clicked row
+            values = tree.item(item, "values")
+            if len(values) < 6:  # Should have 6 columns including Action
+                return
+            
+            trading_symbol = values[0]  # Name column
+            quantity = values[1]        # Quantity column
+            average_price = values[2]   # Average Price column
+            last_price = values[3]      # Last Price column
+            action_text = values[5]     # Action column value
+            
+            # Check if clicked on Action column (last column)
+            column = tree.identify_column(event.x)
+            self.logger.info(f"Clicked on column: {column}, Action text: {action_text}")
+            
+            if column == "#6":  # Action column is the 6th column
+                if "Add Trade" in action_text:
+                    # Visual feedback - change cursor
+                    tree.config(cursor="hand2")
+                    positions_window.update()
+                    
+                    self.logger.info(f"Adding position as trade leg: {trading_symbol}")
+                    # Add position directly as trade leg
+                    self._add_position_as_trade_leg(positions_window, trading_symbol, quantity, average_price, last_price)
+                    
+                    # Reset cursor
+                    tree.config(cursor="")
+                else:
+                    # Position is already in trade, show info message
+                    import tkinter.messagebox as msgbox
+                    msgbox.showinfo("Position in Trade", 
+                                  f"Position '{trading_symbol}' is already part of an open trade.\n"
+                                  f"Action: {action_text}")
+            else:
+                # If not clicked on Action column, just select the row
+                # Reset cursor to default
+                tree.config(cursor="")
+                self.logger.info(f"Clicked on non-action column: {column}")
+                
+        except Exception as e:
+            self.logger.error(f"Error handling add trade click: {e}")
+            import tkinter.messagebox as msgbox
+            msgbox.showerror("Error", f"Failed to handle add trade click: {e}")
+    
+    def _on_tree_hover(self, event, tree):
+        """Handle mouse hover over treeview for visual feedback"""
+        try:
+            # Get the item and column under the mouse
+            item = tree.identify_row(event.y)
+            column = tree.identify_column(event.x)
+            
+            if item and column == "#6":  # Action column
+                # Get the action text
+                values = tree.item(item, "values")
+                if len(values) >= 6:
+                    action_text = values[5]
+                    if "Add Trade" in action_text:
+                        # Change cursor to hand pointer for clickable items
+                        tree.config(cursor="hand2")
+                    else:
+                        tree.config(cursor="")
+                else:
+                    tree.config(cursor="")
+            else:
+                tree.config(cursor="")
+                
+        except Exception as e:
+            # Silently handle hover errors to avoid spam
+            pass
+    
+    def _on_tree_leave(self, event, tree):
+        """Handle mouse leave from treeview"""
+        try:
+            tree.config(cursor="")
+        except Exception as e:
+            # Silently handle leave errors
+            pass
+    
+    def _add_position_as_trade_leg(self, parent_window, trading_symbol, quantity, average_price, last_price):
+        """Add position directly as trade leg to current open trade or create new trade"""
+        try:
+            import tkinter.messagebox as msgbox
+            from trade_models import Trade, TradeLeg, OptionType, PositionType
+            from datetime import datetime
+            
+            # Get strategy manager
+            strategy_manager = None
+            if hasattr(self, 'strategy_manager') and self.strategy_manager:
+                strategy_manager = self.strategy_manager
+            elif hasattr(self, '_main_app') and hasattr(self._main_app, 'strategy_manager'):
+                strategy_manager = self._main_app.strategy_manager
+            
+            if not strategy_manager:
+                msgbox.showerror("Error", "Strategy manager not available")
+                return
+            
+            # Get current open trades
+            open_trades = strategy_manager.get_open_positions()
+            
+            # Find the most recent open trade or create a new one
+            current_trade = None
+            if open_trades:
+                # Use the most recent open trade
+                current_trade = open_trades[0]
+                self.logger.info(f"Using existing trade: {current_trade.trade_id}")
+            else:
+                # Create a new trade
+                trade_id = f"POSITION_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+                current_trade = Trade(
+                    trade_id=trade_id,
+                    strategy_name="Position Trade",
+                    underlying_instrument=trading_symbol.split('_')[0] if '_' in trading_symbol else trading_symbol,
+                    notes=f"Auto-created trade for position: {trading_symbol}"
+                )
+                self.logger.info(f"Created new trade: {trade_id}")
+            
+            # Parse trading symbol to determine option type and strike price
+            option_type = OptionType.CALL  # Default
+            strike_price = 0.0
+            
+            # Try to extract option details from trading symbol
+            symbol_upper = trading_symbol.upper()
+            if any(x in symbol_upper for x in ['CE', 'CALL', 'C']):
+                option_type = OptionType.CALL
+            elif any(x in symbol_upper for x in ['PE', 'PUT', 'P']):
+                option_type = OptionType.PUT
+            else:
+                # Default to CALL if we can't determine
+                option_type = OptionType.CALL
+            
+            # Try to extract strike price (look for numbers in the symbol)
+            import re
+            numbers = re.findall(r'\d+', trading_symbol)
+            if numbers:
+                strike_price = float(numbers[-1])  # Use the last number found
+            
+            # Parse quantity safely
+            try:
+                qty_value = int(quantity)
+            except (ValueError, TypeError):
+                qty_value = 1  # Default to 1 if parsing fails
+            
+            # Determine position type based on quantity
+            position_type = PositionType.LONG if qty_value > 0 else PositionType.SHORT
+            
+            # Parse average price safely
+            try:
+                if average_price != 'N/A':
+                    entry_price = float(average_price.replace('₹', '').replace(',', ''))
+                else:
+                    entry_price = 0.0
+            except (ValueError, TypeError):
+                entry_price = 0.0
+            
+            # Create trade leg
+            trade_leg = TradeLeg(
+                instrument=trading_symbol,
+                instrument_name=trading_symbol,
+                option_type=option_type,
+                strike_price=strike_price,
+                position_type=position_type,
+                quantity=abs(qty_value),  # Use absolute value
+                entry_timestamp=datetime.now(),
+                entry_price=entry_price
+            )
+            
+            # Add leg to trade
+            current_trade.add_leg(trade_leg)
+            
+            # Save trade to database
+            # Check if trade already exists in database
+            existing_trade = strategy_manager.db.get_trade(current_trade.trade_id)
+            
+            if existing_trade is None:
+                # New trade - save it
+                success = strategy_manager.db.save_trade(current_trade)
+                if success:
+                    self.logger.info(f"New trade saved successfully: {current_trade.trade_id}")
+                else:
+                    self.logger.error("Failed to save new trade")
+                    msgbox.showerror("Error", "Failed to save new trade")
+                    return
+            else:
+                # Existing trade - update it
+                success = strategy_manager.db.update_trade(current_trade)
+                if success:
+                    self.logger.info(f"Trade updated successfully: {current_trade.trade_id}")
+                else:
+                    self.logger.error("Failed to update trade")
+                    msgbox.showerror("Error", "Failed to update trade")
+                    return
+            
+            # Show success message
+            msgbox.showinfo("Trade Leg Added", 
+                          f"Position '{trading_symbol}' added as trade leg!\n"
+                          f"Trade ID: {current_trade.trade_id}\n"
+                          f"Quantity: {abs(qty_value)}\n"
+                          f"Position Type: {position_type.value}\n"
+                          f"Option Type: {option_type.value}\n"
+                          f"Strike Price: ₹{strike_price:.2f}\n"
+                          f"Entry Price: ₹{trade_leg.entry_price:.2f}")
+            
+            # Refresh chart 2 to recalculate payoff with new trade leg
+            try:
+                self.logger.info("Refreshing chart 2 after adding trade leg")
+                self._refresh_chart_display()
+            except Exception as refresh_error:
+                self.logger.warning(f"Could not refresh chart 2: {refresh_error}")
+            
+            # Refresh the positions window to update the action column
+            if parent_window and parent_window.winfo_exists():
+                try:
+                    # Find the tree widget in the parent window
+                    tree_widget = None
+                    for widget in parent_window.winfo_children():
+                        if isinstance(widget, ttk.Frame):
+                            for child in widget.winfo_children():
+                                if isinstance(child, ttk.LabelFrame):
+                                    for grandchild in child.winfo_children():
+                                        if isinstance(grandchild, ttk.Treeview):
+                                            tree_widget = grandchild
+                                            break
+                                    if tree_widget:
+                                        break
+                                if tree_widget:
+                                    break
+                            if tree_widget:
+                                break
+                    
+                    if tree_widget:
+                        # Found the tree, refresh the window
+                        self._refresh_positions_window(parent_window, tree_widget, None, None)
+                    else:
+                        self.logger.warning("Could not find tree widget for refresh")
+                except Exception as refresh_error:
+                    self.logger.warning(f"Could not refresh positions window: {refresh_error}")
+            else:
+                self.logger.warning("Parent window not available for refresh")
+            
+        except Exception as e:
+            self.logger.error(f"Error adding position as trade leg: {e}")
+            import tkinter.messagebox as msgbox
+            msgbox.showerror("Error", f"Failed to add position as trade leg: {e}")
+    
+    def _show_add_trade_dialog(self, parent_window, trading_symbol, quantity, average_price, last_price):
+        """Show dialog for adding a trade based on the selected position"""
+        try:
+            # Create a simple dialog window
+            dialog = tk.Toplevel(parent_window)
+            dialog.title(f"Add Trade - {trading_symbol}")
+            dialog.geometry("400x300")
+            dialog.resizable(False, False)
+            
+            # Ensure parent window is visible and mapped
+            parent_window.update_idletasks()
+            if parent_window.winfo_viewable():
+                dialog.transient(parent_window)
+                # Center the dialog relative to parent
+                parent_x = parent_window.winfo_rootx()
+                parent_y = parent_window.winfo_rooty()
+                parent_width = parent_window.winfo_width()
+                parent_height = parent_window.winfo_height()
+                
+                dialog_width = 400
+                dialog_height = 300
+                x = parent_x + (parent_width - dialog_width) // 2
+                y = parent_y + (parent_height - dialog_height) // 2
+                dialog.geometry(f"{dialog_width}x{dialog_height}+{x}+{y}")
+            else:
+                # Fallback: center on screen
+                dialog.geometry("+%d+%d" % (200, 200))
+            
+            # Set grab after window is properly positioned
+            dialog.update_idletasks()
+            try:
+                if dialog.winfo_viewable():
+                    dialog.grab_set()
+            except tk.TclError as grab_error:
+                self.logger.warning(f"Could not set grab on dialog: {grab_error}")
+                # Continue without grab - dialog will still work but not be modal
+            
+            # Main frame
+            main_frame = ttk.Frame(dialog, padding=20)
+            main_frame.pack(fill=tk.BOTH, expand=True)
+            
+            # Title
+            title_label = ttk.Label(main_frame, text=f"Add Trade for {trading_symbol}", 
+                                  font=("Arial", 14, "bold"))
+            title_label.pack(pady=(0, 20))
+            
+            # Position info frame
+            info_frame = ttk.LabelFrame(main_frame, text="Position Information", padding=10)
+            info_frame.pack(fill=tk.X, pady=(0, 20))
+            
+            # Display current position info
+            ttk.Label(info_frame, text=f"Trading Symbol: {trading_symbol}").pack(anchor=tk.W)
+            ttk.Label(info_frame, text=f"Current Quantity: {quantity}").pack(anchor=tk.W)
+            ttk.Label(info_frame, text=f"Average Price: {average_price}").pack(anchor=tk.W)
+            ttk.Label(info_frame, text=f"Last Price: {last_price}").pack(anchor=tk.W)
+            
+            # Trade details frame
+            trade_frame = ttk.LabelFrame(main_frame, text="New Trade Details", padding=10)
+            trade_frame.pack(fill=tk.X, pady=(0, 20))
+            
+            # Trade type selection
+            ttk.Label(trade_frame, text="Trade Type:").pack(anchor=tk.W)
+            trade_type_var = tk.StringVar(value="BUY")
+            trade_type_frame = ttk.Frame(trade_frame)
+            trade_type_frame.pack(fill=tk.X, pady=(5, 10))
+            ttk.Radiobutton(trade_type_frame, text="BUY", variable=trade_type_var, value="BUY").pack(side=tk.LEFT, padx=(0, 20))
+            ttk.Radiobutton(trade_type_frame, text="SELL", variable=trade_type_var, value="SELL").pack(side=tk.LEFT)
+            
+            # Quantity input
+            ttk.Label(trade_frame, text="Quantity:").pack(anchor=tk.W)
+            quantity_var = tk.StringVar(value="1")
+            quantity_entry = ttk.Entry(trade_frame, textvariable=quantity_var, width=20)
+            quantity_entry.pack(anchor=tk.W, pady=(5, 10))
+            
+            # Price input
+            ttk.Label(trade_frame, text="Price:").pack(anchor=tk.W)
+            price_var = tk.StringVar(value=last_price.replace("₹", "").replace(",", ""))
+            price_entry = ttk.Entry(trade_frame, textvariable=price_var, width=20)
+            price_entry.pack(anchor=tk.W, pady=(5, 10))
+            
+            # Buttons frame
+            buttons_frame = ttk.Frame(main_frame)
+            buttons_frame.pack(fill=tk.X, pady=(10, 0))
+            
+            def on_add_trade():
+                try:
+                    trade_type = trade_type_var.get()
+                    trade_quantity = int(quantity_var.get())
+                    trade_price = float(price_var.get())
+                    
+                    # Here you would typically call the trading API
+                    # For now, just show a confirmation
+                    import tkinter.messagebox as msgbox
+                    msgbox.showinfo("Trade Added", 
+                                  f"Trade added successfully!\n"
+                                  f"Type: {trade_type}\n"
+                                  f"Quantity: {trade_quantity}\n"
+                                  f"Price: ₹{trade_price:.2f}")
+                    
+                    try:
+                        dialog.destroy()
+                    except tk.TclError:
+                        # Dialog already destroyed
+                        pass
+                    
+                except ValueError as e:
+                    import tkinter.messagebox as msgbox
+                    msgbox.showerror("Invalid Input", f"Please enter valid numbers: {e}")
+                except Exception as e:
+                    import tkinter.messagebox as msgbox
+                    msgbox.showerror("Error", f"Failed to add trade: {e}")
+            
+            def on_cancel():
+                try:
+                    dialog.destroy()
+                except tk.TclError:
+                    # Dialog already destroyed
+                    pass
+            
+            # Add Trade and Cancel buttons
+            ttk.Button(buttons_frame, text="Add Trade", command=on_add_trade).pack(side=tk.LEFT, padx=(0, 10))
+            ttk.Button(buttons_frame, text="Cancel", command=on_cancel).pack(side=tk.LEFT)
+            
+            # Focus on quantity entry
+            quantity_entry.focus()
+            
+            # Add window close handler
+            def on_dialog_close():
+                try:
+                    dialog.destroy()
+                except tk.TclError:
+                    # Dialog already destroyed
+                    pass
+            
+            dialog.protocol("WM_DELETE_WINDOW", on_dialog_close)
+            
+        except Exception as e:
+            self.logger.error(f"Error showing add trade dialog: {e}")
+            import tkinter.messagebox as msgbox
+            msgbox.showerror("Error", f"Failed to show add trade dialog: {e}")
     
     def _place_iron_condor_orders(self, trade_window, trade):
         """Place all Iron Condor orders using Upstox API"""
