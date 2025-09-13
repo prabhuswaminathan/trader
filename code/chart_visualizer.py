@@ -2271,7 +2271,7 @@ class TkinterChartApp:
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
             from matplotlib.figure import Figure
             
-            self.tech_fig = Figure(figsize=(8, 2.9), dpi=100)
+            self.tech_fig = Figure(figsize=(8, 3.4), dpi=100)
             self.tech_ax = self.tech_fig.add_subplot(111)
             
             # Create canvas - fixed height, no vertical expansion
