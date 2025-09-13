@@ -120,7 +120,8 @@ class MarketDataApp:
         try:
             self.chart_visualizer = LiveChartVisualizer(
                 title=f"Live Market Data - {self.broker_type.upper()}",
-                max_candles=500  # Increased to handle full intraday dataset (288+ candles)
+                max_candles=500,  # Increased to handle full intraday dataset (288+ candles)
+                main_app=self
             )
                         
             # Add instruments to chart
@@ -188,8 +189,7 @@ class MarketDataApp:
             if not self.agent.subscribe_live_data(instrument_keys):
                 raise RuntimeError("Failed to subscribe to live data")
             
-            # Set datawarehouse reference in chart visualizer
-            self.chart_visualizer.set_datawarehouse(datawarehouse)
+            # Datawarehouse reference is already set in run_chart_app
             
             # Start chart
             self.chart_visualizer.start_chart()
@@ -855,8 +855,14 @@ class MarketDataApp:
             
             # Set the main app reference in chart app for chart refresh
             self.chart_app._main_app = self
+            # Also set main app reference in the chart visualizer
+            self.chart_app.chart._main_app = self
             
             logger.info("Starting chart application...")
+            
+            # Set datawarehouse reference in chart visualizer (regardless of weekend/holiday)
+            logger.info("Setting datawarehouse reference in chart visualizer")
+            self.chart_visualizer.set_datawarehouse(datawarehouse)
             
             # Auto-start the chart and timer
             logger.info("Auto-starting chart and timer...")

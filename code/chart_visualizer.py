@@ -15,11 +15,12 @@ from collections import deque
 from trade_models import PositionType, OptionType
 
 class LiveChartVisualizer:
-    def __init__(self, title="Live Market Data", max_candles=100, candle_interval_minutes=5):
+    def __init__(self, title="Live Market Data", max_candles=100, candle_interval_minutes=5, main_app=None):
         self.title = title
         self.max_candles = max_candles
         self.candle_interval_minutes = candle_interval_minutes
         self.logger = logging.getLogger("ChartVisualizer")
+        self._main_app = main_app
         
         # Data storage
         self.data_queue = queue.Queue()
@@ -115,6 +116,7 @@ class LiveChartVisualizer:
     def set_datawarehouse(self, datawarehouse):
         """Set reference to datawarehouse instance"""
         self.datawarehouse = datawarehouse
+        self.logger.info(f"Datawarehouse set in chart visualizer: {datawarehouse}")
         self.logger.info("Datawarehouse reference set for chart visualizer")
     
     def start_datawarehouse_timer(self):
@@ -717,6 +719,10 @@ class LiveChartVisualizer:
             else:
                 # Update Y-axis scale based on price range
                 self._update_y_axis_scale()
+                
+                # Draw latest price line if available
+                self.logger.debug("About to draw latest price line")
+                self._draw_latest_price_line()
             
             # Format x-axis with time display
             self._format_x_axis_time()
@@ -734,6 +740,44 @@ class LiveChartVisualizer:
             
         except Exception as e:
             self.logger.error(f"Error drawing charts: {e}")
+    
+    def _draw_latest_price_line(self):
+        """Draw horizontal line showing latest price with price display on right side"""
+        try:
+            # Get the latest price from datawarehouse
+            latest_price = None
+            if hasattr(self, 'datawarehouse') and self.datawarehouse:
+                # Get the primary instrument (Nifty 50)
+                primary_instrument = 'NSE_INDEX|Nifty 50'
+                latest_price = self.datawarehouse.get_latest_price(primary_instrument)
+                self.logger.info(f"Retrieved latest price from datawarehouse: {latest_price}")
+            else:
+                self.logger.info(f"No datawarehouse available for latest price - hasattr datawarehouse: {hasattr(self, 'datawarehouse')}, datawarehouse: {getattr(self, 'datawarehouse', None)}")
+            
+            if latest_price is not None:
+                # Get current x-axis limits
+                xlim = self.price_ax.get_xlim()
+                
+                # Draw horizontal line for latest price
+                self.price_ax.axhline(y=latest_price, color='red', linestyle='--', linewidth=2, alpha=0.8, label='Latest Price')
+                
+                # Add price text on the right side of the chart
+                # Position the text at the right edge of the chart
+                right_x = xlim[1] - (xlim[1] - xlim[0]) * 0.02  # 2% from right edge
+                self.price_ax.text(right_x, latest_price, f'₹{latest_price:.2f}', 
+                                 ha='right', va='center', fontsize=10, fontweight='bold',
+                                 bbox=dict(boxstyle='round,pad=0.3', facecolor='red', alpha=0.8, edgecolor='darkred'),
+                                 color='white')
+                
+                # Update legend to include latest price
+                self.price_ax.legend(loc='upper left', fontsize=8)
+                
+                self.logger.info(f"Drew latest price line at {latest_price}")
+            else:
+                self.logger.info("No latest price available to draw line")
+            
+        except Exception as e:
+            self.logger.error(f"Error drawing latest price line: {e}")
     
     def _format_x_axis_time(self):
         """Format X-axis to display time with appropriate intervals"""
@@ -1708,6 +1752,9 @@ class TkinterChartApp:
         self.chart = chart_visualizer
         self.logger = logging.getLogger("TkinterChartApp")
         
+        # Set main app reference in chart
+        self.chart._main_app = None  # Will be set later
+        
         # Chart 2 crosshair functionality
         self.grid2_crosshair_vline = None  # Vertical crosshair line for chart 2
         self.grid2_crosshair_hline = None  # Horizontal crosshair line for chart 2
@@ -1893,6 +1940,9 @@ class TkinterChartApp:
             else:
                 self.logger.debug(f"Using live feed price {actual_price}")
             
+            # Update Grid 1 with latest price line immediately
+            self._update_grid1_with_latest_price(instrument_key, actual_price)
+            
             # Check if it's time to update Grid 2 (every 5 seconds)
             if hasattr(self.chart, 'last_grid2_update') and hasattr(self.chart, 'grid2_update_interval'):
                 if current_time - self.chart.last_grid2_update >= self.chart.grid2_update_interval:
@@ -1910,6 +1960,19 @@ class TkinterChartApp:
                 
         except Exception as e:
             self.logger.error(f"Error handling live data update for payoff chart: {e}")
+    
+    def _update_grid1_with_latest_price(self, instrument_key, price):
+        """Update Grid 1 chart with latest price line"""
+        try:
+            # Only update for Nifty 50 (primary instrument)
+            if instrument_key == 'NSE_INDEX|Nifty 50':
+                # Force chart update to redraw with latest price line
+                if hasattr(self.chart, 'force_chart_update'):
+                    self.chart.force_chart_update()
+                    self.logger.debug(f"Updated Grid 1 with latest price: {price}")
+            
+        except Exception as e:
+            self.logger.error(f"Error updating Grid 1 with latest price: {e}")
     
     def _update_grid2_with_live_data(self):
         """Update Grid 2 with the latest stored live data"""
@@ -3491,6 +3554,10 @@ Breakevens: {', '.join(breakeven_texts)}"""
                             
                             # Redraw the canvas
                             self.canvas.draw_idle()
+                            
+                            # Force chart update to redraw with latest price line
+                            if hasattr(self.chart, 'force_chart_update'):
+                                self.chart.force_chart_update()
                             
                             self.logger.info(f"Resized chart to {fig_width:.1f}x{fig_height:.1f} inches ({grid1_width}x{grid1_height} pixels)")
                 
