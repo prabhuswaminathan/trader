@@ -42,6 +42,11 @@ class MarketDataApp:
         self.timer_thread: Optional[threading.Thread] = None
         self.timer_running = False
         self.timer_interval = 300  # 5 minutes in seconds
+        
+        # Technical indicators refresh timer
+        self.tech_refresh_timer_thread: Optional[threading.Thread] = None
+        self.tech_refresh_timer_running = False
+        self.tech_refresh_interval = 3600  # 1 hour in seconds
         self.market_start_time = dt_time(9, 15)  # 9:15 AM
         self.market_end_time = dt_time(15, 30)   # 3:30 PM
         
@@ -321,6 +326,82 @@ class MarketDataApp:
         except Exception as e:
             logger.error(f"Error displaying technical indicators in Grid 3: {e}")
     
+    def _start_tech_refresh_timer(self):
+        """Start the technical indicators refresh timer (every 1 hour during market hours and weekdays)"""
+        try:
+            if self.tech_refresh_timer_running:
+                logger.info("Technical refresh timer is already running")
+                return
+            
+            self.tech_refresh_timer_running = True
+            self.tech_refresh_timer_thread = threading.Thread(target=self._tech_refresh_timer_loop, daemon=True)
+            self.tech_refresh_timer_thread.start()
+            logger.info("Technical indicators refresh timer started (every 1 hour during market hours and weekdays)")
+            
+        except Exception as e:
+            logger.error(f"Failed to start technical refresh timer: {e}")
+            self.tech_refresh_timer_running = False
+    
+    def _tech_refresh_timer_loop(self):
+        """Technical indicators refresh timer loop that runs every hour during market hours and weekdays"""
+        try:
+            logger.info("Technical refresh timer loop started - will refresh Grid 3 every 1 hour during market hours and weekdays")
+            
+            while self.tech_refresh_timer_running:
+                current_time = datetime.now().time()
+                current_date = datetime.now().date()
+                
+                # Check if it's a weekend
+                if Utils.isWeekend():
+                    logger.info("Weekend detected - technical refresh timer will not refresh data")
+                    time.sleep(300)  # Wait 5 minutes before checking again
+                    continue
+                
+                # Check if it's a trading holiday
+                if self._is_trading_holiday:
+                    logger.debug("Trading holiday detected - technical refresh timer will not refresh data")
+                    time.sleep(300)  # Wait 5 minutes before checking again
+                    continue
+                
+                # Check if we're within market hours (9:15 AM to 3:30 PM)
+                if self._is_market_hours(current_time):
+                    logger.info(f"Technical refresh timer - Market hours detected: {current_time.strftime('%H:%M:%S')}")
+                    
+                    # Refresh technical indicators in Grid 3
+                    self._refresh_technical_indicators()
+                    
+                    # Wait for the next interval (1 hour)
+                    logger.info("Technical refresh timer - Waiting 1 hour for next refresh...")
+                    time.sleep(self.tech_refresh_interval)
+                else:
+                    # Outside market hours, wait 15 minutes and check again
+                    logger.debug(f"Technical refresh timer - Outside market hours: {current_time.strftime('%H:%M:%S')}")
+                    time.sleep(900)  # Wait 15 minutes
+                    
+        except Exception as e:
+            logger.error(f"Error in technical refresh timer loop: {e}")
+        finally:
+            self.tech_refresh_timer_running = False
+            logger.info("Technical refresh timer loop stopped")
+    
+    def _refresh_technical_indicators(self):
+        """Refresh technical indicators in Grid 3 with latest historical data"""
+        try:
+            logger.info("Refreshing technical indicators in Grid 3...")
+            
+            # Fetch fresh 3 months of historical data
+            historical_data, indicators = self.fetch_3_months_historical_data()
+            
+            if historical_data and indicators and self.chart_app:
+                # Display updated technical indicators in Grid 3
+                self.chart_app.display_technical_indicators(historical_data, indicators)
+                logger.info("✓ Technical indicators refreshed in Grid 3")
+            else:
+                logger.warning("No historical data or indicators available for Grid 3 refresh")
+                
+        except Exception as e:
+            logger.error(f"Error refreshing technical indicators in Grid 3: {e}")
+    
     def fetch_and_display_historical_data(self):
         """Fetch historical data from broker and display in chart"""
         try:
@@ -581,6 +662,16 @@ class MarketDataApp:
         except Exception as e:
             logger.error(f"Error stopping timer: {e}")
     
+    def stop_tech_refresh_timer(self):
+        """Stop the technical indicators refresh timer"""
+        try:
+            self.tech_refresh_timer_running = False
+            if self.tech_refresh_timer_thread and self.tech_refresh_timer_thread.is_alive():
+                self.tech_refresh_timer_thread.join(timeout=5)
+            logger.info("Technical indicators refresh timer stopped")
+        except Exception as e:
+            logger.error(f"Error stopping technical refresh timer: {e}")
+    
     def _stop_all_timers_and_feeds(self):
         """Stop all timers and live feed after market close (3:45 PM)"""
         try:
@@ -588,6 +679,9 @@ class MarketDataApp:
             
             # Stop the main trading timer
             self.stop_timer()
+            
+            # Stop the technical indicators refresh timer
+            self.stop_tech_refresh_timer()
             
             # Stop the datawarehouse timer (5-second updates for chart 2)
             if self.chart_visualizer:
@@ -791,6 +885,10 @@ class MarketDataApp:
                     self.chart_app.status_label.config(text="Status: Weekend Mode - Historical data only")
                 else:
                     self.chart_app.status_label.config(text="Status: Historical Data Mode - No refresh needed")
+            
+            # Start the technical refresh timer (runs on weekdays, not weekends)
+            if not is_weekend:
+                self._start_tech_refresh_timer()
             
             # Auto-display strategy in Grid 2 on startup
             try:

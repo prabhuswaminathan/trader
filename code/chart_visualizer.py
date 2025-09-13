@@ -2208,7 +2208,7 @@ class TkinterChartApp:
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
             from matplotlib.figure import Figure
             
-            self.tech_fig = Figure(figsize=(8, 2.5), dpi=100)
+            self.tech_fig = Figure(figsize=(8, 2.9), dpi=100)
             self.tech_ax = self.tech_fig.add_subplot(111)
             
             # Create canvas - fixed height, no vertical expansion
@@ -2239,6 +2239,7 @@ class TkinterChartApp:
                                                 font=("Arial", 8), foreground="gray")
             self.tech_timestamp_label.pack(side=tk.LEFT)
             
+            # Refresh button
             refresh_button = ttk.Button(button_frame, text="Refresh Data", 
                                       command=self._refresh_technical_indicators)
             refresh_button.pack(side=tk.RIGHT)
@@ -2260,7 +2261,7 @@ class TkinterChartApp:
             
             # Create Treeview for table - increased height
             columns = ('Indicator', 'Current Value', 'Status', 'Signal')
-            self.tech_table = ttk.Treeview(table_container, columns=columns, show='headings', height=10)
+            self.tech_table = ttk.Treeview(table_container, columns=columns, show='headings', height=6)
             
             # Configure columns
             self.tech_table.heading('Indicator', text='Indicator')
@@ -2431,10 +2432,148 @@ class TkinterChartApp:
                 current_time = datetime.now().strftime("%H:%M:%S")
                 self.tech_timestamp_label.config(text=f"Last updated: {current_time}")
             
+            # Calculate and display overall signal
+            self._calculate_and_display_overall_signal(indicators)
+            
             self.logger.info(f"Updated technical table with {len(table_data)} indicators")
             
         except Exception as e:
             self.logger.error(f"Error updating technical table: {e}")
+    
+    def _calculate_and_display_overall_signal(self, indicators):
+        """Calculate overall Buy/Sell signal using weighted technical analysis data."""
+        try:
+            # Helper function to get latest value
+            def get_latest_value(key):
+                if key in indicators and indicators[key]:
+                    values = [x for x in indicators[key] if x is not None]
+                    return values[0] if values else None
+                return None
+            
+            # Get latest values
+            ma_20 = get_latest_value('ma_20')
+            ma_50 = get_latest_value('ma_50')
+            ma_100 = get_latest_value('ma_100')
+            ma_200 = get_latest_value('ma_200')
+            rsi = get_latest_value('rsi')
+            macd = get_latest_value('macd')
+            super_trend = get_latest_value('super_trend')
+            super_trend_direction = get_latest_value('super_trend_direction')
+            
+            # Get current price for MA comparison
+            current_price = None
+            if hasattr(self, '_latest_historical_data') and self._latest_historical_data:
+                current_price = self._latest_historical_data[0].get('close')
+            
+            # Calculate individual signals
+            signals = {}
+            weights = {'super_trend': 0.35, 'ma': 0.25, 'macd': 0.25, 'rsi': 0.15}
+            
+            # 1. Super Trend Signal (0.35 weight)
+            if super_trend is not None and super_trend_direction is not None:
+                signals['super_trend'] = 1 if super_trend_direction == 1 else -1
+            else:
+                signals['super_trend'] = 0
+            
+            # 2. Moving Average Signal (0.25 weight)
+            if all(x is not None for x in [ma_20, ma_50, ma_100, ma_200]) and current_price is not None:
+                ma_values = [ma_20, ma_50, ma_100, ma_200]
+                above_count = sum(1 for ma in ma_values if current_price > ma)
+                if above_count >= 3:  # 3 or more MAs above
+                    signals['ma'] = 1
+                elif above_count <= 1:  # 1 or fewer MAs above
+                    signals['ma'] = -1
+                else:  # 2 MAs above
+                    signals['ma'] = 0
+            else:
+                signals['ma'] = 0
+            
+            # 3. MACD Signal (0.25 weight)
+            if macd is not None:
+                if macd > 0:
+                    signals['macd'] = 1
+                elif macd < 0:
+                    signals['macd'] = -1
+                else:
+                    signals['macd'] = 0
+            else:
+                signals['macd'] = 0
+            
+            # 4. RSI Signal (0.15 weight)
+            if rsi is not None:
+                if rsi > 70:  # Overbought
+                    signals['rsi'] = -1
+                elif rsi < 30:  # Oversold
+                    signals['rsi'] = 1
+                else:  # Neutral
+                    signals['rsi'] = 0
+            else:
+                signals['rsi'] = 0
+            
+            # Calculate weighted score
+            weighted_score = 0
+            for signal_name, weight in weights.items():
+                weighted_score += signals[signal_name] * weight
+            
+            # Determine overall signal
+            if weighted_score >= 0.5:
+                overall_signal = "BUY"
+                signal_color = "green"
+            elif weighted_score <= -0.5:
+                overall_signal = "SELL"
+                signal_color = "red"
+            else:
+                overall_signal = "NEUTRAL"
+                signal_color = "orange"
+            
+            # Display the overall signal below the table
+            self._display_overall_signal(weighted_score, overall_signal, signal_color, signals)
+            
+            self.logger.info(f"Overall signal calculated: {overall_signal} (Score: {weighted_score:.3f})")
+            
+        except Exception as e:
+            self.logger.error(f"Error calculating overall signal: {e}")
+    
+    def _display_overall_signal(self, score, signal, color, individual_signals):
+        """Display the overall signal below the technical table."""
+        try:
+            # Create or update the signal display frame
+            if not hasattr(self, 'signal_frame'):
+                # Find the table frame parent
+                table_frame = None
+                for widget in self.grid3_frame.winfo_children():
+                    if isinstance(widget, ttk.Frame):
+                        for child in widget.winfo_children():
+                            if isinstance(child, ttk.LabelFrame) and "Technical Indicators" in str(child.cget('text')):
+                                table_frame = child
+                                break
+                        if table_frame:
+                            break
+                
+                if table_frame:
+                    # Create signal display frame below the table
+                    self.signal_frame = ttk.Frame(table_frame)
+                    self.signal_frame.pack(fill=tk.X, pady=(10, 0))
+                    
+                    # Create signal label
+                    self.signal_label = ttk.Label(self.signal_frame, text="", font=("Arial", 12, "bold"))
+                    self.signal_label.pack(side=tk.LEFT)
+                    
+                    # Create score label
+                    self.score_label = ttk.Label(self.signal_frame, text="", font=("Arial", 10))
+                    self.score_label.pack(side=tk.LEFT, padx=(20, 0))
+            
+            # Update the signal display
+            if hasattr(self, 'signal_label'):
+                self.signal_label.config(text=f"Overall Signal: {signal}", foreground=color)
+            
+            if hasattr(self, 'score_label'):
+                # Create detailed breakdown
+                breakdown = f"Score: {score:.3f} | ST:{individual_signals['super_trend']} MA:{individual_signals['ma']} MACD:{individual_signals['macd']} RSI:{individual_signals['rsi']}"
+                self.score_label.config(text=breakdown)
+            
+        except Exception as e:
+            self.logger.error(f"Error displaying overall signal: {e}")
     
     def _refresh_technical_indicators(self):
         """Refresh technical indicators data"""
@@ -2446,6 +2585,7 @@ class TkinterChartApp:
                 self.logger.warning("Main app reference not available for refreshing technical indicators")
         except Exception as e:
             self.logger.error(f"Error refreshing technical indicators: {e}")
+    
     
     def display_technical_indicators(self, historical_data, indicators):
         """Display technical indicators chart in Grid 3"""
