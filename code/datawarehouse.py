@@ -30,6 +30,9 @@ class DataWarehouse:
         # Latest price storage for P&L calculations (from all sources)
         self.latest_prices: Dict[str, Dict] = {}  # {instrument: {price, timestamp, volume, source}}
         
+        # Technical indicators storage
+        self.technical_indicators: Dict[str, Dict] = {}  # {instrument: {indicator_name: values}}
+        
         # Configuration
         self.default_interval_minutes = 5
         self.max_candles_in_memory = 1000  # Keep last 1000 candles in memory
@@ -429,6 +432,40 @@ class DataWarehouse:
                 
         except Exception as e:
             self.logger.error(f"Error storing latest price for {instrument}: {e}")
+    
+    def store_technical_indicators(self, instrument: str, indicators: Dict[str, List[Optional[float]]]) -> None:
+        """
+        Store technical indicators for an instrument
+        
+        Args:
+            instrument (str): Instrument identifier
+            indicators (Dict): Dictionary of indicator names and their values
+        """
+        try:
+            with self.lock:
+                self.technical_indicators[instrument] = indicators
+                self.logger.info(f"Stored technical indicators for {instrument}: {list(indicators.keys())}")
+                
+        except Exception as e:
+            self.logger.error(f"Error storing technical indicators for {instrument}: {e}")
+    
+    def get_technical_indicators(self, instrument: str) -> Dict[str, List[Optional[float]]]:
+        """
+        Get technical indicators for an instrument
+        
+        Args:
+            instrument (str): Instrument identifier
+            
+        Returns:
+            Dict: Dictionary of indicator names and their values
+        """
+        try:
+            with self.lock:
+                return self.technical_indicators.get(instrument, {})
+                
+        except Exception as e:
+            self.logger.error(f"Error getting technical indicators for {instrument}: {e}")
+            return {}
     
     def get_latest_price_data(self, instrument: str) -> Optional[Dict]:
         """

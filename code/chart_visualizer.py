@@ -2119,16 +2119,14 @@ class TkinterChartApp:
         # Add initial content to grid 2
         self._initialize_grid2_content()
         
-        # Grid 3 (Bottom-Left): Placeholder for future use
-        self.grid3_frame = ttk.LabelFrame(grid_frame, text="Grid 3 - Available", padding=5)
+        # Grid 3 (Bottom-Left): Technical Indicators Chart
+        self.grid3_frame = ttk.LabelFrame(grid_frame, text="Technical Indicators", padding=5)
         self.grid3_frame.grid(row=1, column=0, sticky="nsew", padx=2, pady=2)
         self.grid3_frame.grid_rowconfigure(0, weight=1)
         self.grid3_frame.grid_columnconfigure(0, weight=1)
         
-        # Add placeholder content to grid 3
-        placeholder3 = ttk.Label(self.grid3_frame, text="Available for future charts\nor data displays", 
-                               justify="center", font=("Arial", 12))
-        placeholder3.grid(row=0, column=0, sticky="nsew")
+        # Initialize Grid 3 content
+        self._initialize_grid3_content()
         
         # Grid 4 (Bottom-Right): Placeholder for future use
         self.grid4_frame = ttk.LabelFrame(grid_frame, text="Grid 4 - Available", padding=5)
@@ -2189,6 +2187,361 @@ class TkinterChartApp:
             
         except Exception as e:
             print(f"Error initializing Grid 2 content: {e}")
+    
+    def _initialize_grid3_content(self):
+        """Initialize Grid 3 with technical indicators content"""
+        try:
+            # Clear any existing content
+            for widget in self.grid3_frame.winfo_children():
+                widget.destroy()
+            
+            # Create main container with chart and table
+            main_container = ttk.Frame(self.grid3_frame)
+            main_container.pack(fill=tk.BOTH, expand=True)
+            
+            # Chart frame (top) - smaller height
+            chart_frame = ttk.Frame(main_container)
+            chart_frame.pack(fill=tk.X, expand=False, pady=(0, 5))
+            
+            # Create matplotlib figure for technical indicators - smaller size
+            import matplotlib.pyplot as plt
+            from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+            from matplotlib.figure import Figure
+            
+            self.tech_fig = Figure(figsize=(8, 2.5), dpi=100)
+            self.tech_ax = self.tech_fig.add_subplot(111)
+            
+            # Create canvas - fixed height, no vertical expansion
+            self.tech_canvas = FigureCanvasTkAgg(self.tech_fig, chart_frame)
+            self.tech_canvas.draw()
+            self.tech_canvas.get_tk_widget().pack(fill=tk.X, expand=False)
+            
+            # Add placeholder text
+            self.tech_ax.text(0.5, 0.5, 'Technical Indicators\nWill be displayed here\nwhen data is available', 
+                            ha='center', va='center', fontsize=12, transform=self.tech_ax.transAxes)
+            self.tech_ax.set_title('Technical Analysis')
+            self.tech_ax.set_xlabel('Time')
+            self.tech_ax.set_ylabel('Price / Indicator Value')
+            
+            # Table frame (bottom) - larger height
+            table_frame = ttk.LabelFrame(main_container, text="Technical Indicators Data", padding=5)
+            table_frame.pack(fill=tk.BOTH, expand=True, pady=(5, 0))
+            
+            # Add a visible border to make the table frame more prominent
+            table_frame.configure(relief="solid", borderwidth=2)
+            
+            # Add refresh button and timestamp
+            button_frame = ttk.Frame(table_frame)
+            button_frame.pack(fill=tk.X, pady=(0, 5))
+            
+            # Timestamp label
+            self.tech_timestamp_label = ttk.Label(button_frame, text="Last updated: Never", 
+                                                font=("Arial", 8), foreground="gray")
+            self.tech_timestamp_label.pack(side=tk.LEFT)
+            
+            refresh_button = ttk.Button(button_frame, text="Refresh Data", 
+                                      command=self._refresh_technical_indicators)
+            refresh_button.pack(side=tk.RIGHT)
+            
+            # Create table for technical indicators
+            self._create_technical_table(table_frame)
+            
+            self.logger.info("Grid 3 initialized for technical indicators with chart and table")
+            
+        except Exception as e:
+            self.logger.error(f"Error initializing Grid 3 content: {e}")
+    
+    def _create_technical_table(self, parent_frame):
+        """Create table for displaying technical indicators data"""
+        try:
+            # Create frame for table
+            table_container = ttk.Frame(parent_frame)
+            table_container.pack(fill=tk.BOTH, expand=True)
+            
+            # Create Treeview for table - increased height
+            columns = ('Indicator', 'Current Value', 'Status', 'Signal')
+            self.tech_table = ttk.Treeview(table_container, columns=columns, show='headings', height=10)
+            
+            # Configure columns
+            self.tech_table.heading('Indicator', text='Indicator')
+            self.tech_table.heading('Current Value', text='Current Value')
+            self.tech_table.heading('Status', text='Status')
+            self.tech_table.heading('Signal', text='Signal')
+            
+            # Set column widths
+            self.tech_table.column('Indicator', width=120, minwidth=100)
+            self.tech_table.column('Current Value', width=100, minwidth=80)
+            self.tech_table.column('Status', width=80, minwidth=60)
+            self.tech_table.column('Signal', width=80, minwidth=60)
+            
+            # Add scrollbar
+            scrollbar = ttk.Scrollbar(table_container, orient=tk.VERTICAL, command=self.tech_table.yview)
+            self.tech_table.configure(yscrollcommand=scrollbar.set)
+            
+            # Pack table and scrollbar
+            self.tech_table.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            # Add placeholder data initially
+            self._update_technical_table({})
+            
+        except Exception as e:
+            self.logger.error(f"Error creating technical table: {e}")
+    
+    def _update_technical_table(self, indicators):
+        """Update the technical indicators table with current values"""
+        try:
+            # Clear existing items
+            for item in self.tech_table.get_children():
+                self.tech_table.delete(item)
+            
+            if not indicators:
+                # Add placeholder message
+                self.tech_table.insert('', 'end', values=('No data available', '', '', ''))
+                return
+            
+            # Get the most recent values (first in the list since data is most recent first)
+            def get_latest_value(key):
+                if key in indicators and indicators[key]:
+                    values = [x for x in indicators[key] if x is not None]
+                    return values[0] if values else None
+                return None
+            
+            # Moving Averages
+            ma_20 = get_latest_value('ma_20')
+            ma_50 = get_latest_value('ma_50')
+            ma_100 = get_latest_value('ma_100')
+            ma_200 = get_latest_value('ma_200')
+            
+            # RSI
+            rsi = get_latest_value('rsi')
+            
+            # MACD
+            macd = get_latest_value('macd')
+            macd_signal = get_latest_value('macd_signal')
+            macd_histogram = get_latest_value('macd_histogram')
+            
+            # Super Trend
+            super_trend = get_latest_value('super_trend')
+            super_trend_direction = get_latest_value('super_trend_direction')
+            
+            # Add rows to table
+            table_data = []
+            
+            # Consolidated Moving Averages with intelligent signal
+            if all(x is not None for x in [ma_20, ma_50, ma_100, ma_200]):
+                # Get current price from the most recent historical data
+                # Since historical_data is most recent first, get the first close price
+                current_price = None
+                if hasattr(self, '_latest_historical_data') and self._latest_historical_data:
+                    current_price = self._latest_historical_data[0].get('close')
+                
+                if current_price is not None:
+                    # Count how many MAs the price is above
+                    ma_values = [ma_20, ma_50, ma_100, ma_200]
+                    above_count = sum(1 for ma in ma_values if current_price > ma)
+                    
+                    # Generate signal based on price position
+                    if above_count == 4:
+                        signal = 'Strong Buy'
+                        status = 'Price above all MA'
+                    elif above_count == 0:
+                        signal = 'Strong Sell'
+                        status = 'Price below all MA'
+                    elif above_count >= 2:
+                        signal = 'Buy'
+                        status = f'Price above {above_count}/4 MA'
+                    else:
+                        signal = 'Sell'
+                        status = f'Price below {4-above_count}/4 MA'
+                    
+                    # Create consolidated MA row
+                    ma_display = f"20:{ma_20:.0f} 50:{ma_50:.0f} 100:{ma_100:.0f} 200:{ma_200:.0f}"
+                    table_data.append(('Moving Averages', ma_display, status, signal))
+                else:
+                    # Fallback if no current price
+                    ma_display = f"20:{ma_20:.0f} 50:{ma_50:.0f} 100:{ma_100:.0f} 200:{ma_200:.0f}"
+                    table_data.append(('Moving Averages', ma_display, 'Active', 'Trend'))
+            else:
+                # Add individual MAs if not all available
+                if ma_20 is not None:
+                    table_data.append(('MA 20', f'{ma_20:.2f}', 'Active', 'Trend'))
+                if ma_50 is not None:
+                    table_data.append(('MA 50', f'{ma_50:.2f}', 'Active', 'Trend'))
+                if ma_100 is not None:
+                    table_data.append(('MA 100', f'{ma_100:.2f}', 'Active', 'Trend'))
+                if ma_200 is not None:
+                    table_data.append(('MA 200', f'{ma_200:.2f}', 'Active', 'Trend'))
+            
+            # RSI
+            if rsi is not None:
+                if rsi > 70:
+                    status = 'Overbought'
+                    signal = 'SELL'
+                elif rsi < 30:
+                    status = 'Oversold'
+                    signal = 'BUY'
+                else:
+                    status = 'Neutral'
+                    signal = 'HOLD'
+                table_data.append(('RSI (14)', f'{rsi:.2f}', status, signal))
+            
+            # MACD
+            if macd is not None and macd_signal is not None:
+                if macd > macd_signal:
+                    signal = 'BUY'
+                else:
+                    signal = 'SELL'
+                table_data.append(('MACD', f'{macd:.2f}', 'Active', signal))
+            
+            if macd_histogram is not None:
+                if macd_histogram > 0:
+                    signal = 'BUY'
+                else:
+                    signal = 'SELL'
+                table_data.append(('MACD Histogram', f'{macd_histogram:.2f}', 'Active', signal))
+            
+            # Super Trend
+            if super_trend is not None and super_trend_direction is not None:
+                if super_trend_direction == 1:
+                    status = 'Uptrend'
+                    signal = 'BUY'
+                else:
+                    status = 'Downtrend'
+                    signal = 'SELL'
+                table_data.append(('Super Trend', f'{super_trend:.2f}', status, signal))
+            
+            # Insert data into table
+            for data in table_data:
+                self.tech_table.insert('', 'end', values=data)
+                self.logger.info(f"Added table row: {data}")
+            
+            # If no data available
+            if not table_data:
+                self.tech_table.insert('', 'end', values=('No valid data', '', '', ''))
+                self.logger.warning("No table data available - showing placeholder")
+            
+            # Log table item count for debugging
+            item_count = len(self.tech_table.get_children())
+            self.logger.info(f"Technical table now has {item_count} items")
+            
+            # Update timestamp
+            if hasattr(self, 'tech_timestamp_label'):
+                from datetime import datetime
+                current_time = datetime.now().strftime("%H:%M:%S")
+                self.tech_timestamp_label.config(text=f"Last updated: {current_time}")
+            
+            self.logger.info(f"Updated technical table with {len(table_data)} indicators")
+            
+        except Exception as e:
+            self.logger.error(f"Error updating technical table: {e}")
+    
+    def _refresh_technical_indicators(self):
+        """Refresh technical indicators data"""
+        try:
+            if hasattr(self, '_main_app') and self._main_app:
+                self.logger.info("Refreshing technical indicators...")
+                self._main_app._display_technical_indicators_in_grid3()
+            else:
+                self.logger.warning("Main app reference not available for refreshing technical indicators")
+        except Exception as e:
+            self.logger.error(f"Error refreshing technical indicators: {e}")
+    
+    def display_technical_indicators(self, historical_data, indicators):
+        """Display technical indicators chart in Grid 3"""
+        try:
+            if not historical_data or not indicators:
+                self.logger.warning("No historical data or indicators available for display")
+                return
+            
+            # Store historical data for table updates
+            self._latest_historical_data = historical_data
+            
+            # Clear the existing plot
+            self.tech_ax.clear()
+            
+            # Extract data for plotting
+            # Historical data is sorted with most recent first, but we need chronological order for plotting
+            reversed_data = list(reversed(historical_data))
+            close_prices = [candle['close'] for candle in reversed_data]
+            timestamps = [candle['timestamp'] for candle in reversed_data]
+            
+            # Convert timestamps to datetime if they're strings
+            if timestamps and isinstance(timestamps[0], str):
+                from datetime import datetime
+                timestamps = [datetime.fromisoformat(ts.replace('Z', '+00:00')) for ts in timestamps]
+            
+            # Plot price line
+            self.tech_ax.plot(timestamps, close_prices, 'b-', linewidth=1, label='Price', alpha=0.7)
+            
+            # Plot moving averages (indicators are already in chronological order)
+            if 'ma_20' in indicators:
+                ma_20 = [x for x in indicators['ma_20'] if x is not None]
+                if ma_20:
+                    self.tech_ax.plot(timestamps[-len(ma_20):], ma_20, 'orange', linewidth=1, label='MA 20', alpha=0.8)
+            
+            if 'ma_50' in indicators:
+                ma_50 = [x for x in indicators['ma_50'] if x is not None]
+                if ma_50:
+                    self.tech_ax.plot(timestamps[-len(ma_50):], ma_50, 'red', linewidth=1, label='MA 50', alpha=0.8)
+            
+            if 'ma_100' in indicators:
+                ma_100 = [x for x in indicators['ma_100'] if x is not None]
+                if ma_100:
+                    self.tech_ax.plot(timestamps[-len(ma_100):], ma_100, 'purple', linewidth=1, label='MA 100', alpha=0.8)
+            
+            if 'ma_200' in indicators:
+                ma_200 = [x for x in indicators['ma_200'] if x is not None]
+                if ma_200:
+                    self.tech_ax.plot(timestamps[-len(ma_200):], ma_200, 'brown', linewidth=1, label='MA 200', alpha=0.8)
+            
+            # Plot Super Trend (indicators are already in chronological order)
+            if 'super_trend' in indicators:
+                super_trend = [x for x in indicators['super_trend'] if x is not None]
+                if super_trend:
+                    # Color based on direction
+                    super_trend_colors = []
+                    if 'super_trend_direction' in indicators:
+                        directions = [x for x in indicators['super_trend_direction'] if x is not None]
+                        for i, direction in enumerate(directions[-len(super_trend):]):
+                            if direction == 1:  # Uptrend
+                                super_trend_colors.append('green')
+                            else:  # Downtrend
+                                super_trend_colors.append('red')
+                    else:
+                        super_trend_colors = ['blue'] * len(super_trend)
+                    
+                    # Plot Super Trend line
+                    self.tech_ax.plot(timestamps[-len(super_trend):], super_trend, 'g-', linewidth=2, label='Super Trend', alpha=0.9)
+            
+            # Set labels and title
+            self.tech_ax.set_title('Technical Analysis - 3 Months Historical Data', fontsize=12, fontweight='bold')
+            self.tech_ax.set_xlabel('Time')
+            self.tech_ax.set_ylabel('Price')
+            
+            # Add legend
+            self.tech_ax.legend(loc='upper left', fontsize=8)
+            
+            # Format x-axis
+            self.tech_ax.tick_params(axis='x', rotation=45, labelsize=8)
+            self.tech_ax.tick_params(axis='y', labelsize=8)
+            
+            # Add grid
+            self.tech_ax.grid(True, alpha=0.3)
+            
+            # Adjust layout
+            self.tech_fig.tight_layout()
+            
+            # Refresh canvas
+            self.tech_canvas.draw()
+            
+            # Update the technical indicators table
+            self._update_technical_table(indicators)
+            
+            self.logger.info("Technical indicators displayed in Grid 3 with table")
+            
+        except Exception as e:
+            self.logger.error(f"Error displaying technical indicators: {e}")
     
     def display_trade_payoff_graph(self, trades, spot_price, strategy_manager=None):
         """Display trade payoff chart in Grid 2 for single or multiple trades"""

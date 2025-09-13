@@ -261,6 +261,66 @@ class MarketDataApp:
         except Exception as e:
             logger.error(f"Error loading historical data: {e}")
     
+    def fetch_3_months_historical_data(self):
+        """Fetch 3 months of hourly historical data for technical indicators"""
+        try:
+            # Get the primary instrument (first in the list)
+            primary_instrument = list(self.instruments[self.broker_type].keys())[0]
+            
+            # Calculate date range (3 months back)
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=90)  # Approximately 3 months
+            
+            start_date_str = start_date.strftime("%Y-%m-%d")
+            end_date_str = end_date.strftime("%Y-%m-%d")
+            
+            logger.info(f"Fetching 3 months of hourly historical data for {primary_instrument} from {start_date_str} to {end_date_str}")
+            
+            # Fetch hourly data
+            historical_data = self.agent.get_ohlc_historical_data(
+                primary_instrument,
+                unit="hours",
+                interval=1,
+                from_date=start_date_str,
+                end_date=end_date_str
+            )
+            
+            if historical_data and len(historical_data) > 0:
+                logger.info(f"Fetched {len(historical_data)} hourly candles for technical analysis")
+                
+                # Calculate technical indicators
+                from technical_indicators import TechnicalIndicators
+                indicators = TechnicalIndicators.calculate_all_indicators(historical_data)
+                
+                # Store in datawarehouse for Grid 3
+                datawarehouse.store_technical_indicators(primary_instrument, indicators)
+                
+                logger.info("✓ Technical indicators calculated and stored")
+                return historical_data, indicators
+            else:
+                logger.warning("No historical data received for technical analysis")
+                return None, {}
+                
+        except Exception as e:
+            logger.error(f"Error fetching 3 months historical data: {e}")
+            return None, {}
+    
+    def _display_technical_indicators_in_grid3(self):
+        """Fetch and display technical indicators in Grid 3"""
+        try:
+            # Fetch 3 months of historical data and calculate indicators
+            historical_data, indicators = self.fetch_3_months_historical_data()
+            
+            if historical_data and indicators and self.chart_app:
+                # Display technical indicators in Grid 3
+                self.chart_app.display_technical_indicators(historical_data, indicators)
+                logger.info("✓ Technical indicators displayed in Grid 3")
+            else:
+                logger.warning("No historical data or indicators available for Grid 3")
+                
+        except Exception as e:
+            logger.error(f"Error displaying technical indicators in Grid 3: {e}")
+    
     def fetch_and_display_historical_data(self):
         """Fetch historical data from broker and display in chart"""
         try:
@@ -744,6 +804,13 @@ class MarketDataApp:
                     self._display_appropriate_chart()
                 except Exception as fallback_error:
                     logger.error(f"Error in fallback chart display: {fallback_error}")
+            
+            # Fetch and display technical indicators in Grid 3
+            try:
+                logger.info("Fetching technical indicators for Grid 3...")
+                self._display_technical_indicators_in_grid3()
+            except Exception as e:
+                logger.error(f"Error fetching technical indicators: {e}")
             
             # Override the window close handler to include cleanup
             def cleanup_and_close():
