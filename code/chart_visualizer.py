@@ -2070,6 +2070,10 @@ class TkinterChartApp:
                                           command=self._show_trade_book_window)
         self.trade_book_button.pack(side=tk.LEFT, padx=(0, 5))
         
+        self.check_positions_button = ttk.Button(toolbar_frame, text="Check Positions", 
+                                               command=self._check_positions)
+        self.check_positions_button.pack(side=tk.LEFT, padx=(0, 5))
+        
         self.info_button = ttk.Button(toolbar_frame, text="Info", 
                                     command=self._show_info_window)
         self.info_button.pack(side=tk.LEFT, padx=(0, 5))
@@ -3804,6 +3808,22 @@ Max Loss: ₹{max_loss:,.0f}"""
             self.logger.error(f"Error checking if position exists in trade legs: {e}")
             return False
     
+    def _check_positions(self):
+        """Check positions manually by calling the main app's position comparison method"""
+        try:
+            if hasattr(self, '_main_app') and self._main_app:
+                self.logger.info("Manually checking positions...")
+                self._main_app.compare_positions_with_database()
+            else:
+                self.logger.warning("Main app reference not available for position checking")
+                # Fallback: show a simple message
+                import tkinter.messagebox as messagebox
+                messagebox.showinfo("Check Positions", "Position checking requires main app connection.")
+        except Exception as e:
+            self.logger.error(f"Error checking positions: {e}")
+            import tkinter.messagebox as messagebox
+            messagebox.showerror("Error", f"Failed to check positions: {e}")
+
     def _on_add_trade_click(self, event, tree, positions_window):
         """Handle Add Trade button clicks in the positions window"""
         try:

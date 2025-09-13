@@ -314,7 +314,9 @@ class MarketDataApp:
                 return False
             
 
-            data_fetched = True
+            data_fetched = False
+            intraday_data = None
+            
             if not Utils.isWeekend():
                 # Fetch 1-minute intraday data from broker
                 logger.info(f"Calling get_ohlc_intraday_data with instrument: {primary_instrument}")
@@ -328,16 +330,17 @@ class MarketDataApp:
                 except TradingHolidayException as e:
                     logger.warning(f"Trading holiday detected: {e}")
                     data_fetched = False
-            counter = 0
-            while not data_fetched and counter < 2:
-                logger.info("Weekend detected - fetching historical data")
+            
+            # If intraday data failed or it's weekend, try historical data as fallback
+            if not data_fetched:
+                logger.info("Intraday data not available - fetching historical data as fallback")
                 if Utils.isWeekend():
                     start_date = Utils.getPreviousFriday().strftime("%Y-%m-%d")
                 else:
-                    start_date = (datetime.now() - timedelta(days=1)) .strftime("%Y-%m-%d")
+                    start_date = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d")
+                
                 intraday_data = self._load_historical_data(start_date, start_date)
-                data_fetched = len(intraday_data) == 0  
-                counter += 1
+                data_fetched = len(intraday_data) > 0
             
             if intraday_data and len(intraday_data) > 0:
                 logger.info(f"Fetched {len(intraday_data)} candles from broker")
@@ -568,9 +571,12 @@ class MarketDataApp:
                     # Exit the timer loop
                     break
                 
-                # Check if it's a trading holiday
-                if self._is_trading_holiday:
-                    logger.info("Trading holiday detected - timer will not fetch data")
+                # Check if it's a weekend or trading holiday
+                if Utils.isWeekend() or self._is_trading_holiday:
+                    if Utils.isWeekend():
+                        logger.info("Weekend detected - timer will not fetch data")
+                    else:
+                        logger.info("Trading holiday detected - timer will not fetch data")
                     time.sleep(300)  # Wait 5 minutes before checking again
                     continue
                 
@@ -651,6 +657,13 @@ class MarketDataApp:
                     self.chart_visualizer.force_chart_update()
                 
                 logger.info(f"Timer [{current_time}]: ✓ Intraday data fetched and candlestick chart updated")
+                
+                # Compare positions with database after successful data fetch
+                try:
+                    logger.info(f"Timer [{current_time}]: Checking position consistency...")
+                    self.compare_positions_with_database()
+                except Exception as e:
+                    logger.error(f"Timer [{current_time}]: Error in position comparison: {e}")
             else:
                 logger.warning(f"Timer [{current_time}]: ⚠ Failed to fetch intraday data")
             
@@ -696,16 +709,28 @@ class MarketDataApp:
             self.chart_app.chart.start_chart()
             self.chart_app.status_label.config(text="Status: Running - Chart initialized with intraday data")
             
-            if not self._is_trading_holiday:
+            # Check if it's weekend or trading holiday
+            is_weekend = Utils.isWeekend()
+            should_start_live_data = not self._is_trading_holiday and not is_weekend
+            
+            if should_start_live_data:
                 # Start live data streaming
                 self.start_live_data()
+            else:
+                if is_weekend:
+                    logger.info("Weekend detected - skipping live data subscription")
+                if self._is_trading_holiday:
+                    logger.info("Trading holiday detected - skipping live data subscription")
             
-            # Start the timer for automatic data fetching (only if not trading holiday)
-            if not self._is_trading_holiday:
+            # Start the timer for automatic data fetching (only if not trading holiday or weekend)
+            if should_start_live_data:
                 self.start_timer()
                 self.chart_app.status_label.config(text="Status: Running - Timer active (5min + 10s intervals)")
             else:
-                self.chart_app.status_label.config(text="Status: Historical Data Mode - No refresh needed")
+                if is_weekend:
+                    self.chart_app.status_label.config(text="Status: Weekend Mode - Historical data only")
+                else:
+                    self.chart_app.status_label.config(text="Status: Historical Data Mode - No refresh needed")
             
             # Auto-display strategy in Grid 2 on startup
             try:
@@ -816,6 +841,122 @@ class MarketDataApp:
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
     
+    def compare_positions_with_database(self):
+        """
+        Compare open trade legs in database with server positions and show alert if mismatch.
+        """
+        try:
+            if not self.agent:
+                logger.warning("No agent available for position comparison")
+                return
+            
+            # Get open trade legs from database
+            from trade_database import TradeDatabase
+            db = TradeDatabase("trades.db")
+            open_legs = db.get_open_trade_legs()
+            
+            if not open_legs:
+                logger.info("No open trade legs found in database")
+                return
+            
+            # Fetch positions from server
+            server_positions = self.agent.fetch_positions()
+            if not server_positions:
+                logger.warning("No positions received from server")
+                return
+            
+            # Create a set of server position trading symbols for quick lookup
+            server_symbols = set()
+            for pos in server_positions:
+                trading_symbol = pos.get('trading_symbol', '')
+                if trading_symbol:
+                    server_symbols.add(trading_symbol)
+            
+            # Check for missing positions
+            missing_positions = []
+            for leg in open_legs:
+                # Try different matching strategies
+                leg_found = False
+                
+                # Direct match
+                if leg.instrument in server_symbols:
+                    leg_found = True
+                elif leg.instrument_name in server_symbols:
+                    leg_found = True
+                else:
+                    # Partial match - check if any server position contains the leg instrument
+                    for server_symbol in server_symbols:
+                        if (leg.instrument in server_symbol or 
+                            server_symbol in leg.instrument or
+                            leg.instrument_name in server_symbol or
+                            server_symbol in leg.instrument_name):
+                            leg_found = True
+                            break
+                
+                if not leg_found:
+                    missing_positions.append({
+                        'instrument': leg.instrument,
+                        'instrument_name': leg.instrument_name,
+                        'option_type': leg.option_type.value,
+                        'strike_price': leg.strike_price,
+                        'position_type': leg.position_type.value,
+                        'quantity': leg.quantity
+                    })
+            
+            # Show alert if there are missing positions
+            if missing_positions:
+                self._show_position_mismatch_alert(missing_positions, len(server_positions))
+            else:
+                logger.info(f"✓ All {len(open_legs)} open trade legs found in server positions")
+                
+        except Exception as e:
+            logger.error(f"Error comparing positions with database: {e}")
+    
+    def _show_position_mismatch_alert(self, missing_positions, server_position_count):
+        """
+        Show alert dialog for missing positions.
+        
+        Args:
+            missing_positions: List of missing position details
+            server_position_count: Total number of server positions
+        """
+        try:
+            import tkinter as tk
+            from tkinter import messagebox
+            
+            # Create alert message
+            message = f"Position Mismatch Alert!\n\n"
+            message += f"Found {len(missing_positions)} open trade legs in database that are NOT present in server positions.\n"
+            message += f"Server has {server_position_count} positions.\n\n"
+            message += "Missing positions:\n"
+            
+            for i, pos in enumerate(missing_positions, 1):
+                message += f"{i}. {pos['instrument_name']} ({pos['option_type']} {pos['strike_price']}) - {pos['position_type']} {pos['quantity']}\n"
+            
+            message += "\nThis could indicate:\n"
+            message += "• Positions were closed outside the application\n"
+            message += "• Database is out of sync with server\n"
+            message += "• Network/API issues\n\n"
+            message += "Please verify your positions manually."
+            
+            # Show alert
+            if self.chart_app and hasattr(self.chart_app, 'root'):
+                # Show in the main window
+                messagebox.showwarning("Position Mismatch", message, parent=self.chart_app.root)
+            else:
+                # Fallback: print to console
+                logger.warning(f"POSITION MISMATCH ALERT: {message}")
+                print(f"\n{'='*60}")
+                print("POSITION MISMATCH ALERT")
+                print(f"{'='*60}")
+                print(message)
+                print(f"{'='*60}\n")
+                
+        except Exception as e:
+            logger.error(f"Error showing position mismatch alert: {e}")
+            # Fallback: just log the issue
+            logger.warning(f"POSITION MISMATCH: {len(missing_positions)} positions missing from server")
+
     def get_status(self) -> Dict[str, Any]:
         """Get current application status"""
         status = {

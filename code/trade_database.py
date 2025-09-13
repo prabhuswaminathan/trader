@@ -394,6 +394,29 @@ class TradeDatabase:
             logger.error(f"Error getting open trades: {e}")
             return []
     
+    def get_open_trade_legs(self) -> List[TradeLeg]:
+        """
+        Get all open trade legs from all open trades.
+        
+        Returns:
+            List[TradeLeg]: List of all open trade legs
+        """
+        try:
+            open_trades = self.get_open_trades()
+            open_legs = []
+            
+            for trade in open_trades:
+                for leg in trade.legs:
+                    if leg.is_open():
+                        open_legs.append(leg)
+            
+            logger.info(f"Found {len(open_legs)} open trade legs from {len(open_trades)} open trades")
+            return open_legs
+                
+        except Exception as e:
+            logger.error(f"Error getting open trade legs: {e}")
+            return []
+    
     def get_trades_by_strategy(self, strategy_name: str) -> List[Trade]:
         """
         Get all trades for a specific strategy.
