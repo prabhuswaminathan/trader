@@ -844,6 +844,7 @@ class MarketDataApp:
     def compare_positions_with_database(self):
         """
         Compare open trade legs in database with server positions and show alert if mismatch.
+        For each missing position, show a dialog to enter exit price and close the trade leg.
         """
         try:
             if not self.agent:
@@ -853,10 +854,10 @@ class MarketDataApp:
             # Get open trade legs from database
             from trade_database import TradeDatabase
             db = TradeDatabase("trades.db")
-            open_legs = db.get_open_trade_legs()
+            open_trades = db.get_open_trades()
             
-            if not open_legs:
-                logger.info("No open trade legs found in database")
+            if not open_trades:
+                logger.info("No open trades found in database")
                 return
             
             # Fetch positions from server
@@ -872,42 +873,75 @@ class MarketDataApp:
                 if trading_symbol:
                     server_symbols.add(trading_symbol)
             
-            # Check for missing positions
-            missing_positions = []
-            for leg in open_legs:
-                # Try different matching strategies
-                leg_found = False
-                
-                # Direct match
-                if leg.instrument in server_symbols:
-                    leg_found = True
-                elif leg.instrument_name in server_symbols:
-                    leg_found = True
-                else:
-                    # Partial match - check if any server position contains the leg instrument
-                    for server_symbol in server_symbols:
-                        if (leg.instrument in server_symbol or 
-                            server_symbol in leg.instrument or
-                            leg.instrument_name in server_symbol or
-                            server_symbol in leg.instrument_name):
-                            leg_found = True
-                            break
-                
-                if not leg_found:
-                    missing_positions.append({
-                        'instrument': leg.instrument,
-                        'instrument_name': leg.instrument_name,
-                        'option_type': leg.option_type.value,
-                        'strike_price': leg.strike_price,
-                        'position_type': leg.position_type.value,
-                        'quantity': leg.quantity
-                    })
+            # Check for missing positions and show dialogs
+            missing_count = 0
+            closed_count = 0
             
-            # Show alert if there are missing positions
-            if missing_positions:
-                self._show_position_mismatch_alert(missing_positions, len(server_positions))
+            for trade in open_trades:
+                for leg_index, leg in enumerate(trade.legs):
+                    if not leg.is_open():
+                        continue  # Skip closed legs
+                    
+                    # Try different matching strategies
+                    leg_found = False
+                    
+                    # Direct match
+                    if leg.instrument in server_symbols:
+                        leg_found = True
+                    elif leg.instrument_name in server_symbols:
+                        leg_found = True
+                    else:
+                        # Partial match - check if any server position contains the leg instrument
+                        for server_symbol in server_symbols:
+                            if (leg.instrument in server_symbol or 
+                                server_symbol in leg.instrument or
+                                leg.instrument_name in server_symbol or
+                                server_symbol in leg.instrument_name):
+                                leg_found = True
+                                break
+                    
+                    if not leg_found:
+                        missing_count += 1
+                        logger.info(f"Missing position: {leg.instrument_name} in trade {trade.trade_id}")
+                        
+                        # Show exit price dialog
+                        if self.chart_app and hasattr(self.chart_app, 'show_exit_price_dialog'):
+                            leg_info = {
+                                'instrument': leg.instrument,
+                                'instrument_name': leg.instrument_name,
+                                'option_type': leg.option_type.value,
+                                'strike_price': leg.strike_price,
+                                'position_type': leg.position_type.value,
+                                'quantity': leg.quantity
+                            }
+                            
+                            result = self.chart_app.show_exit_price_dialog(leg_info, trade.trade_id)
+                            
+                            if result["confirmed"] and result["exit_price"] is not None:
+                                # Close the trade leg
+                                success = db.close_trade_leg(
+                                    trade.trade_id, 
+                                    leg_index, 
+                                    result["exit_price"], 
+                                    result["exit_time"]
+                                )
+                                
+                                if success:
+                                    closed_count += 1
+                                    logger.info(f"Successfully closed leg {leg_index} in trade {trade.trade_id}")
+                                else:
+                                    logger.error(f"Failed to close leg {leg_index} in trade {trade.trade_id}")
+                            elif result["confirmed"]:
+                                logger.info(f"User skipped closing leg {leg_index} in trade {trade.trade_id}")
+            
+            # Show summary
+            if missing_count > 0:
+                if closed_count > 0:
+                    logger.info(f"✓ Processed {missing_count} missing positions: {closed_count} closed, {missing_count - closed_count} skipped")
+                else:
+                    logger.info(f"Found {missing_count} missing positions, none were closed")
             else:
-                logger.info(f"✓ All {len(open_legs)} open trade legs found in server positions")
+                logger.info(f"✓ All open trade legs found in server positions")
                 
         except Exception as e:
             logger.error(f"Error comparing positions with database: {e}")

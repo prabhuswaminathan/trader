@@ -417,6 +417,58 @@ class TradeDatabase:
             logger.error(f"Error getting open trade legs: {e}")
             return []
     
+    def close_trade_leg(self, trade_id: str, leg_index: int, exit_price: float, exit_timestamp: datetime) -> bool:
+        """
+        Close a specific trade leg with exit price and timestamp.
+        
+        Args:
+            trade_id (str): ID of the trade containing the leg
+            leg_index (int): Index of the leg within the trade
+            exit_price (float): Exit price for the leg
+            exit_timestamp (datetime): Exit timestamp
+            
+        Returns:
+            bool: True if successful, False otherwise
+        """
+        try:
+            # Get the trade
+            trade = self.get_trade(trade_id)
+            if not trade:
+                logger.error(f"Trade {trade_id} not found")
+                return False
+            
+            # Check if leg index is valid
+            if leg_index < 0 or leg_index >= len(trade.legs):
+                logger.error(f"Invalid leg index {leg_index} for trade {trade_id}")
+                return False
+            
+            # Get the leg
+            leg = trade.legs[leg_index]
+            
+            # Check if leg is already closed
+            if leg.is_closed():
+                logger.warning(f"Leg {leg_index} in trade {trade_id} is already closed")
+                return False
+            
+            # Close the leg
+            leg.exit_price = exit_price
+            leg.exit_timestamp = exit_timestamp
+            leg.calculate_profit()  # Recalculate profit
+            
+            # Update the trade in database
+            success = self.update_trade(trade)
+            
+            if success:
+                logger.info(f"Successfully closed leg {leg_index} in trade {trade_id} at price {exit_price}")
+            else:
+                logger.error(f"Failed to update trade {trade_id} after closing leg")
+            
+            return success
+                
+        except Exception as e:
+            logger.error(f"Error closing trade leg: {e}")
+            return False
+    
     def get_trades_by_strategy(self, strategy_name: str) -> List[Trade]:
         """
         Get all trades for a specific strategy.

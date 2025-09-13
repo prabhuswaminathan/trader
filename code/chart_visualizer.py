@@ -3824,6 +3824,133 @@ Max Loss: ₹{max_loss:,.0f}"""
             import tkinter.messagebox as messagebox
             messagebox.showerror("Error", f"Failed to check positions: {e}")
 
+    def show_exit_price_dialog(self, trade_leg_info, trade_id):
+        """
+        Show dialog for entering exit price for a missing trade leg.
+        
+        Args:
+            trade_leg_info (dict): Information about the trade leg
+            trade_id (str): ID of the trade containing this leg
+        """
+        try:
+            import tkinter as tk
+            from tkinter import ttk, messagebox
+            
+            # Create dialog window
+            dialog = tk.Toplevel(self.root)
+            dialog.title("Close Trade Leg")
+            dialog.geometry("500x400")
+            dialog.resizable(False, False)
+            
+            # Make dialog modal
+            dialog.transient(self.root)
+            dialog.grab_set()
+            
+            # Center the dialog
+            dialog.update_idletasks()
+            x = (dialog.winfo_screenwidth() // 2) - (dialog.winfo_width() // 2)
+            y = (dialog.winfo_screenheight() // 2) - (dialog.winfo_height() // 2)
+            dialog.geometry(f"+{x}+{y}")
+            
+            # Main frame
+            main_frame = ttk.Frame(dialog, padding="20")
+            main_frame.pack(fill=tk.BOTH, expand=True)
+            
+            # Title
+            title_label = ttk.Label(main_frame, text="Position Not Found on Server", 
+                                  font=("Arial", 14, "bold"))
+            title_label.pack(pady=(0, 20))
+            
+            # Trade leg information
+            info_frame = ttk.LabelFrame(main_frame, text="Trade Leg Details", padding="10")
+            info_frame.pack(fill=tk.X, pady=(0, 20))
+            
+            # Display trade leg information
+            leg_info_text = f"""Instrument: {trade_leg_info['instrument_name']}
+Option Type: {trade_leg_info['option_type']}
+Strike Price: {trade_leg_info['strike_price']}
+Position Type: {trade_leg_info['position_type']}
+Quantity: {trade_leg_info['quantity']}
+Trade ID: {trade_id}"""
+            
+            info_label = ttk.Label(info_frame, text=leg_info_text, justify=tk.LEFT)
+            info_label.pack(anchor=tk.W)
+            
+            # Exit price input
+            price_frame = ttk.LabelFrame(main_frame, text="Exit Details", padding="10")
+            price_frame.pack(fill=tk.X, pady=(0, 20))
+            
+            # Exit price entry
+            ttk.Label(price_frame, text="Exit Price:").pack(anchor=tk.W)
+            price_var = tk.StringVar()
+            price_entry = ttk.Entry(price_frame, textvariable=price_var, width=20)
+            price_entry.pack(anchor=tk.W, pady=(5, 10))
+            price_entry.focus()
+            
+            # Exit time (default to now)
+            ttk.Label(price_frame, text="Exit Time:").pack(anchor=tk.W)
+            time_var = tk.StringVar()
+            from datetime import datetime
+            time_var.set(datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
+            time_entry = ttk.Entry(price_frame, textvariable=time_var, width=20)
+            time_entry.pack(anchor=tk.W, pady=(5, 0))
+            
+            # Buttons frame
+            button_frame = ttk.Frame(main_frame)
+            button_frame.pack(fill=tk.X, pady=(10, 0))
+            
+            # Result variables
+            result = {"exit_price": None, "exit_time": None, "confirmed": False}
+            
+            def on_confirm():
+                try:
+                    exit_price = float(price_var.get())
+                    exit_time_str = time_var.get()
+                    
+                    # Parse exit time
+                    try:
+                        exit_time = datetime.strptime(exit_time_str, "%Y-%m-%d %H:%M:%S")
+                    except ValueError:
+                        messagebox.showerror("Invalid Time", "Please enter time in format: YYYY-MM-DD HH:MM:SS")
+                        return
+                    
+                    result["exit_price"] = exit_price
+                    result["exit_time"] = exit_time
+                    result["confirmed"] = True
+                    
+                    dialog.destroy()
+                    
+                except ValueError:
+                    messagebox.showerror("Invalid Price", "Please enter a valid numeric price")
+                    return
+            
+            def on_skip():
+                result["confirmed"] = False
+                dialog.destroy()
+            
+            def on_cancel():
+                dialog.destroy()
+            
+            # Buttons
+            ttk.Button(button_frame, text="Confirm & Close Leg", 
+                      command=on_confirm).pack(side=tk.LEFT, padx=(0, 10))
+            ttk.Button(button_frame, text="Skip This Leg", 
+                      command=on_skip).pack(side=tk.LEFT, padx=(0, 10))
+            ttk.Button(button_frame, text="Cancel", 
+                      command=on_cancel).pack(side=tk.RIGHT)
+            
+            # Bind Enter key to confirm
+            dialog.bind('<Return>', lambda e: on_confirm())
+            
+            # Wait for dialog to close
+            dialog.wait_window()
+            
+            return result
+            
+        except Exception as e:
+            self.logger.error(f"Error showing exit price dialog: {e}")
+            return {"exit_price": None, "exit_time": None, "confirmed": False}
+
     def _on_add_trade_click(self, event, tree, positions_window):
         """Handle Add Trade button clicks in the positions window"""
         try:
