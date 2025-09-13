@@ -2777,12 +2777,12 @@ class TkinterChartApp:
                 return
             
             if len(trades) > 0:
-                # Single trade - use existing method
-                payoff_data = strategy_manager.calculate_trade_payoff(trades[0], spot_price)
-            else:
-                # Multiple trades - use combined method
+                # Use combined method for both single and multiple trades to support calendar spreads
                 payoff_data = strategy_manager.calculate_combined_trades_payoff(trades, spot_price)
-                # Check if any trades are open
+            else:
+                # No trades - this shouldn't happen
+                self.logger.warning("No trades provided for payoff calculation")
+                return
             
             open_trades = [t for t in trades if t.status.value == "OPEN"]
             if open_trades:

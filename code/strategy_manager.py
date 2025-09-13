@@ -282,12 +282,22 @@ class StrategyManager:
                         "strike": leg.strike_price,
                         "premium": leg.entry_price or 0.0,
                         "quantity": leg.quantity,
-                        "trade_id": trade.trade_id
+                        "trade_id": trade.trade_id,
+                        "instrument": leg.instrument,
+                        "expiry": self._extract_expiry_from_instrument(leg.instrument)
                     })
             
             if not all_legs:
                 logger.warning("No legs found in provided trades")
                 return {}
+            
+            # Check if this is a calendar spread (different expiries)
+            expiries = set(leg["expiry"] for leg in all_legs if leg["expiry"])
+            is_calendar_spread = len(expiries) > 1
+            
+            if is_calendar_spread:
+                logger.info(f"Detected calendar spread with expiries: {expiries}")
+                return self._calculate_calendar_spread_payoff(all_legs, spot_price, expiries)
             
             # Calculate payoff range based on all strikes
             all_strikes = [leg["strike"] for leg in all_legs]
@@ -339,6 +349,109 @@ class StrategyManager:
             
         except Exception as e:
             logger.error(f"Error calculating combined trades payoff: {e}")
+            return {}
+    
+    def _extract_expiry_from_instrument(self, instrument: str) -> str:
+        """Extract expiry month from instrument name"""
+        try:
+            # Format: NIFTY25DEC25000PE or NIFTY25OCT25000CE
+            if '25' in instrument:
+                parts = instrument.split('25')
+                if len(parts) > 1:
+                    month_part = parts[1][:3]  # Extract DEC, OCT, etc.
+                    return month_part
+            return ""
+        except Exception:
+            return ""
+    
+    def _get_expiry_order(self, expiry: str) -> int:
+        """Get numerical order for expiry months (lower = earlier)"""
+        month_order = {
+            'JAN': 1, 'FEB': 2, 'MAR': 3, 'APR': 4, 'MAY': 5, 'JUN': 6,
+            'JUL': 7, 'AUG': 8, 'SEP': 9, 'OCT': 10, 'NOV': 11, 'DEC': 12
+        }
+        return month_order.get(expiry, 999)
+    
+    def _calculate_calendar_spread_payoff(self, all_legs: List[Dict], spot_price: float, expiries: set) -> Dict[str, Any]:
+        """Calculate payoff for calendar spread with different expiries"""
+        try:
+            # Group legs by expiry
+            legs_by_expiry = {}
+            for leg in all_legs:
+                expiry = leg["expiry"]
+                if expiry not in legs_by_expiry:
+                    legs_by_expiry[expiry] = []
+                legs_by_expiry[expiry].append(leg)
+            
+            # Calculate payoff range
+            all_strikes = [leg["strike"] for leg in all_legs]
+            min_strike = min(all_strikes)
+            max_strike = max(all_strikes)
+            
+            price_range = np.arange(
+                min_strike - 1000, 
+                max_strike + 1000, 
+                10
+            )
+            
+            # Calculate payoffs for each expiry
+            expiry_payoffs = {}
+            for expiry, legs in legs_by_expiry.items():
+                payoffs = []
+                for price in price_range:
+                    total_payoff = 0
+                    for leg in legs:
+                        leg_payoff = self._calculate_leg_payoff(price, leg)
+                        total_payoff += leg_payoff * leg["quantity"]
+                    payoffs.append(total_payoff)
+                expiry_payoffs[expiry] = np.array(payoffs)
+            
+            # For calendar spread, use the nearest expiry for breakeven calculation
+            # (This matches broker terminal behavior)
+            nearest_expiry = min(expiries, key=self._get_expiry_order)  # Use chronological order
+            if nearest_expiry in expiry_payoffs:
+                payoffs = expiry_payoffs[nearest_expiry]
+                logger.info(f"Using {nearest_expiry} expiry for breakeven calculation")
+            else:
+                # Fallback to first available expiry
+                payoffs = list(expiry_payoffs.values())[0]
+                nearest_expiry = list(expiry_payoffs.keys())[0]
+            
+            # Find max profit and loss
+            max_profit = np.max(payoffs)
+            max_loss = np.min(payoffs)
+            
+            # Find breakeven points
+            breakevens = []
+            for i in range(1, len(price_range)):
+                if payoffs[i-1] * payoffs[i] < 0:
+                    # Linear interpolation for more accurate breakeven
+                    x1, y1 = price_range[i-1], payoffs[i-1]
+                    x2, y2 = price_range[i], payoffs[i]
+                    if y2 != y1:
+                        breakeven = x1 - y1 * (x2 - x1) / (y2 - y1)
+                        breakevens.append(round(breakeven, 2))
+                    else:
+                        breakevens.append(round(price_range[i], 2))
+            
+            # Calculate current payoff
+            current_payoff_idx = np.argmin(np.abs(price_range - spot_price))
+            current_payoff = payoffs[current_payoff_idx]
+            
+            return {
+                "price_range": price_range,
+                "payoffs": payoffs,
+                "max_profit": max_profit,
+                "max_loss": max_loss,
+                "breakevens": breakevens,
+                "current_payoff": current_payoff,
+                "is_calendar_spread": True,
+                "nearest_expiry": nearest_expiry,
+                "all_expiries": list(expiries)
+            }
+            
+        except Exception as e:
+            logger.error(f"Error calculating calendar spread payoff: {e}")
             return {}
     
     def plot_iron_condor(self, trade: Trade, spot_price: float, save_path: Optional[str] = None):
