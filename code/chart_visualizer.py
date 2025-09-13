@@ -2474,45 +2474,55 @@ class TkinterChartApp:
             # Plot price line
             self.tech_ax.plot(timestamps, close_prices, 'b-', linewidth=1, label='Price', alpha=0.7)
             
-            # Plot moving averages (indicators are already in chronological order)
+            # Plot moving averages (indicators are most recent first, need to reverse for chronological plotting)
             if 'ma_20' in indicators:
                 ma_20 = [x for x in indicators['ma_20'] if x is not None]
                 if ma_20:
-                    self.tech_ax.plot(timestamps[-len(ma_20):], ma_20, 'orange', linewidth=1, label='MA 20', alpha=0.8)
+                    # Reverse indicators to match chronological order of price data
+                    ma_20_reversed = list(reversed(ma_20))
+                    self.tech_ax.plot(timestamps[-len(ma_20_reversed):], ma_20_reversed, 'orange', linewidth=1, label='MA 20', alpha=0.8)
             
             if 'ma_50' in indicators:
                 ma_50 = [x for x in indicators['ma_50'] if x is not None]
                 if ma_50:
-                    self.tech_ax.plot(timestamps[-len(ma_50):], ma_50, 'red', linewidth=1, label='MA 50', alpha=0.8)
+                    ma_50_reversed = list(reversed(ma_50))
+                    self.tech_ax.plot(timestamps[-len(ma_50_reversed):], ma_50_reversed, 'red', linewidth=1, label='MA 50', alpha=0.8)
             
             if 'ma_100' in indicators:
                 ma_100 = [x for x in indicators['ma_100'] if x is not None]
                 if ma_100:
-                    self.tech_ax.plot(timestamps[-len(ma_100):], ma_100, 'purple', linewidth=1, label='MA 100', alpha=0.8)
+                    ma_100_reversed = list(reversed(ma_100))
+                    self.tech_ax.plot(timestamps[-len(ma_100_reversed):], ma_100_reversed, 'purple', linewidth=1, label='MA 100', alpha=0.8)
             
             if 'ma_200' in indicators:
                 ma_200 = [x for x in indicators['ma_200'] if x is not None]
                 if ma_200:
-                    self.tech_ax.plot(timestamps[-len(ma_200):], ma_200, 'brown', linewidth=1, label='MA 200', alpha=0.8)
+                    ma_200_reversed = list(reversed(ma_200))
+                    self.tech_ax.plot(timestamps[-len(ma_200_reversed):], ma_200_reversed, 'brown', linewidth=1, label='MA 200', alpha=0.8)
             
-            # Plot Super Trend (indicators are already in chronological order)
+            
+            # Plot Super Trend (indicators are most recent first, need to reverse for chronological plotting)
             if 'super_trend' in indicators:
                 super_trend = [x for x in indicators['super_trend'] if x is not None]
                 if super_trend:
+                    # Reverse indicators to match chronological order of price data
+                    super_trend_reversed = list(reversed(super_trend))
+                    
                     # Color based on direction
                     super_trend_colors = []
                     if 'super_trend_direction' in indicators:
                         directions = [x for x in indicators['super_trend_direction'] if x is not None]
-                        for i, direction in enumerate(directions[-len(super_trend):]):
+                        directions_reversed = list(reversed(directions))
+                        for i, direction in enumerate(directions_reversed[-len(super_trend_reversed):]):
                             if direction == 1:  # Uptrend
                                 super_trend_colors.append('green')
                             else:  # Downtrend
                                 super_trend_colors.append('red')
                     else:
-                        super_trend_colors = ['blue'] * len(super_trend)
+                        super_trend_colors = ['blue'] * len(super_trend_reversed)
                     
                     # Plot Super Trend line
-                    self.tech_ax.plot(timestamps[-len(super_trend):], super_trend, 'g-', linewidth=2, label='Super Trend', alpha=0.9)
+                    self.tech_ax.plot(timestamps[-len(super_trend_reversed):], super_trend_reversed, 'g-', linewidth=2, label='Super Trend', alpha=0.9)
             
             # Set labels and title
             self.tech_ax.set_title('Technical Analysis - 3 Months Historical Data', fontsize=12, fontweight='bold')
