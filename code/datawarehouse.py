@@ -433,6 +433,48 @@ class DataWarehouse:
         except Exception as e:
             self.logger.error(f"Error storing latest price for {instrument}: {e}")
     
+    def store_latest_close_price(self, instrument: str, close_price: float) -> None:
+        """
+        Store the latest close price from daily historical data
+        
+        Args:
+            instrument (str): Instrument identifier
+            close_price (float): Latest close price from daily data
+        """
+        try:
+            with self.lock:
+                if not hasattr(self, 'latest_close_prices'):
+                    self.latest_close_prices = {}
+                
+                self.latest_close_prices[instrument] = {
+                    'close_price': close_price,
+                    'timestamp': datetime.now()
+                }
+                self.logger.debug(f"Stored latest close price for {instrument}: {close_price}")
+                
+        except Exception as e:
+            self.logger.error(f"Error storing latest close price for {instrument}: {e}")
+    
+    def get_latest_close_price(self, instrument: str) -> Optional[float]:
+        """
+        Get the latest close price from daily historical data
+        
+        Args:
+            instrument (str): Instrument identifier
+            
+        Returns:
+            float: Latest close price, or None if not available
+        """
+        try:
+            with self.lock:
+                if hasattr(self, 'latest_close_prices') and instrument in self.latest_close_prices:
+                    return self.latest_close_prices[instrument]['close_price']
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"Error getting latest close price for {instrument}: {e}")
+            return None
+    
     def store_technical_indicators(self, instrument: str, indicators: Dict[str, List[Optional[float]]]) -> None:
         """
         Store technical indicators for an instrument

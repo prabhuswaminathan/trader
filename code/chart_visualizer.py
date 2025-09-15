@@ -746,11 +746,14 @@ class LiveChartVisualizer:
         try:
             # Get the latest price from datawarehouse
             latest_price = None
+            latest_close_price = None
             if hasattr(self, 'datawarehouse') and self.datawarehouse:
                 # Get the primary instrument (Nifty 50)
                 primary_instrument = 'NSE_INDEX|Nifty 50'
                 latest_price = self.datawarehouse.get_latest_price(primary_instrument)
+                latest_close_price = self.datawarehouse.get_latest_close_price(primary_instrument)
                 self.logger.info(f"Retrieved latest price from datawarehouse: {latest_price}")
+                self.logger.info(f"Retrieved latest close price from datawarehouse: {latest_close_price}")
             else:
                 self.logger.info(f"No datawarehouse available for latest price - hasattr datawarehouse: {hasattr(self, 'datawarehouse')}, datawarehouse: {getattr(self, 'datawarehouse', None)}")
             
@@ -761,10 +764,23 @@ class LiveChartVisualizer:
                 # Draw horizontal line for latest price
                 self.price_ax.axhline(y=latest_price, color='red', linestyle='--', linewidth=2, alpha=0.8, label='Latest Price')
                 
+                # Calculate price difference if close price is available
+                price_diff = None
+                price_diff_text = ""
+                if latest_close_price is not None:
+                    price_diff = latest_price - latest_close_price
+                    if price_diff > 0:
+                        price_diff_text = f" (+₹{price_diff:.2f})"
+                    elif price_diff < 0:
+                        price_diff_text = f" (₹{price_diff:.2f})"
+                    else:
+                        price_diff_text = " (0.00)"
+                
                 # Add price text on the right side of the chart
                 # Position the text at the right edge of the chart
                 right_x = xlim[1] - (xlim[1] - xlim[0]) * 0.02  # 2% from right edge
-                self.price_ax.text(right_x, latest_price, f'₹{latest_price:.2f}', 
+                price_text = f'₹{latest_price:.2f}{price_diff_text}'
+                self.price_ax.text(right_x, latest_price, price_text, 
                                  ha='right', va='center', fontsize=10, fontweight='bold',
                                  bbox=dict(boxstyle='round,pad=0.3', facecolor='red', alpha=0.8, edgecolor='darkred'),
                                  color='white')
@@ -772,7 +788,7 @@ class LiveChartVisualizer:
                 # Update legend to include latest price
                 self.price_ax.legend(loc='upper left', fontsize=8)
                 
-                self.logger.info(f"Drew latest price line at {latest_price}")
+                self.logger.info(f"Drew latest price line at {latest_price} with difference {price_diff_text}")
             else:
                 self.logger.info("No latest price available to draw line")
             
@@ -784,10 +800,12 @@ class LiveChartVisualizer:
         try:
             # Get the latest price from datawarehouse
             latest_price = None
+            latest_close_price = None
             if hasattr(self, 'datawarehouse') and self.datawarehouse:
                 # Get the primary instrument (Nifty 50)
                 primary_instrument = 'NSE_INDEX|Nifty 50'
                 latest_price = self.datawarehouse.get_latest_price(primary_instrument)
+                latest_close_price = self.datawarehouse.get_latest_close_price(primary_instrument)
             
             if latest_price is not None and self.price_ax:
                 # Check if price has changed significantly to avoid unnecessary updates
@@ -809,9 +827,21 @@ class LiveChartVisualizer:
                 # Draw new horizontal line for latest price
                 self.price_ax.axhline(y=latest_price, color='red', linestyle='--', linewidth=2, alpha=0.8, label='Latest Price')
                 
+                # Calculate price difference if close price is available
+                price_diff_text = ""
+                if latest_close_price is not None:
+                    price_diff = latest_price - latest_close_price
+                    if price_diff > 0:
+                        price_diff_text = f" (+₹{price_diff:.2f})"
+                    elif price_diff < 0:
+                        price_diff_text = f" (₹{price_diff:.2f})"
+                    else:
+                        price_diff_text = " (0.00)"
+                
                 # Add price text on the right side of the chart
                 right_x = xlim[1] - (xlim[1] - xlim[0]) * 0.02  # 2% from right edge
-                self.price_ax.text(right_x, latest_price, f'₹{latest_price:.2f}', 
+                price_text = f'₹{latest_price:.2f}{price_diff_text}'
+                self.price_ax.text(right_x, latest_price, price_text, 
                                  ha='right', va='center', fontsize=10, fontweight='bold',
                                  bbox=dict(boxstyle='round,pad=0.3', facecolor='red', alpha=0.8, edgecolor='darkred'),
                                  color='white')
@@ -823,7 +853,7 @@ class LiveChartVisualizer:
                 if hasattr(self, 'fig') and self.fig:
                     self.fig.canvas.draw_idle()
                 
-                self.logger.debug(f"Updated live price line at {latest_price}")
+                self.logger.debug(f"Updated live price line at {latest_price} with difference {price_diff_text}")
             
         except Exception as e:
             self.logger.error(f"Error updating live price line: {e}")

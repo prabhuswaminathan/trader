@@ -310,6 +310,68 @@ class MarketDataApp:
             logger.error(f"Error fetching 3 months historical data: {e}")
             return None, {}
     
+    def fetch_daily_historical_data(self, days=5):
+        """Fetch daily historical data for the last N days"""
+        try:
+            # Get the primary instrument (first in the list)
+            primary_instrument = list(self.instruments[self.broker_type].keys())[0]
+            
+            # Calculate date range
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=days)
+            
+            start_date_str = start_date.strftime("%Y-%m-%d")
+            end_date_str = end_date.strftime("%Y-%m-%d")
+            
+            logger.info(f"Fetching {days} days of daily historical data for {primary_instrument} from {start_date_str} to {end_date_str}")
+            
+            # Fetch daily data
+            try:
+                daily_data = self.agent.get_ohlc_historical_data(
+                    primary_instrument,
+                    unit="days",
+                    interval=1,
+                    from_date=start_date_str,
+                    end_date=end_date_str
+                )
+            except Exception as e:
+                logger.warning(f"Failed to fetch daily data with unit='day': {e}")
+                # Fallback: try with daily interval using minutes unit
+                try:
+                    daily_data = self.agent.get_ohlc_historical_data(
+                        primary_instrument,
+                        unit="minutes",
+                        interval=1440,  # 1440 minutes = 1 day
+                        from_date=start_date_str,
+                        end_date=end_date_str
+                    )
+                    logger.info("Successfully fetched daily data using minutes unit fallback")
+                except Exception as e2:
+                    logger.error(f"Failed to fetch daily data with fallback method: {e2}")
+                    daily_data = None
+            
+            if daily_data and len(daily_data) > 0:
+                logger.info(f"Fetched {len(daily_data)} daily candles")
+                
+                # Store daily data in datawarehouse
+                datawarehouse.store_historical_data(primary_instrument, daily_data)
+                
+                # Get the latest close price (first in the list since data is most recent first)
+                latest_close_price = daily_data[0].get('close', 0)
+                
+                # Store latest close price for price difference calculation
+                datawarehouse.store_latest_close_price(primary_instrument, latest_close_price)
+                
+                logger.info(f"✓ Daily historical data stored. Latest close price: {latest_close_price}")
+                return daily_data, latest_close_price
+            else:
+                logger.warning("No daily historical data received")
+                return None, None
+                
+        except Exception as e:
+            logger.error(f"Error fetching daily historical data: {e}")
+            return None, None
+    
     def fetch_historical_data_for_timeframe(self, timeframe="Hourly"):
         """Fetch historical data based on selected timeframe"""
         try:
@@ -1303,6 +1365,14 @@ def main():
         
         # Historical data is now fetched fresh during chart initialization
         logger.info("Historical data will be fetched fresh during chart initialization...")
+        
+        # Fetch daily historical data for price difference calculation
+        logger.info("Fetching daily historical data for price difference calculation...")
+        daily_data, latest_close_price = app.fetch_daily_historical_data(days=5)
+        if daily_data and latest_close_price:
+            logger.info(f"✓ Daily historical data loaded successfully - Latest close price: {latest_close_price}")
+        else:
+            logger.warning("⚠ Failed to load daily historical data - price difference will not be available")
         
         # Fetch and display intraday data for candlestick chart
         logger.info("Fetching intraday data for candlestick chart...")
