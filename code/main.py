@@ -310,18 +310,74 @@ class MarketDataApp:
             logger.error(f"Error fetching 3 months historical data: {e}")
             return None, {}
     
-    def _display_technical_indicators_in_grid3(self):
+    def fetch_historical_data_for_timeframe(self, timeframe="Hourly"):
+        """Fetch historical data based on selected timeframe"""
+        try:
+            from datetime import datetime, timedelta
+            
+            # Map timeframe to API parameters
+            timeframe_mapping = {
+                "5 Minute": {"unit": "minutes", "interval": 5, "days": 7},      # 7 days for 5min data
+                "15 Minute": {"unit": "minutes", "interval": 15, "days": 15},    # 15 days for 15min data
+                "Hourly": {"unit": "minutes", "interval": 60, "days": 90},          # 90 days for hourly data
+                "Daily": {"unit": "day", "interval": 1, "days": 365}            # 1 year for daily data
+            }
+            
+            if timeframe not in timeframe_mapping:
+                logger.warning(f"Unknown timeframe: {timeframe}, using Hourly")
+                timeframe = "Hourly"
+            
+            params = timeframe_mapping[timeframe]
+            logger.info(f"Fetching {timeframe} historical data for {params['days']} days...")
+            
+            # Calculate date range
+            end_date = datetime.now()
+            start_date = end_date - timedelta(days=params['days'])
+            
+            # Fetch data from broker
+            historical_data = self.agent.get_ohlc_historical_data(
+                instrument="NSE_INDEX|Nifty 50",
+                unit=params['unit'],
+                interval=params['interval'],
+                from_date=start_date.strftime('%Y-%m-%d'),
+                end_date=end_date.strftime('%Y-%m-%d')
+            )
+            
+            if historical_data:
+                logger.info(f"Fetched {len(historical_data)} {timeframe} candles for technical analysis")
+                
+                # Store in datawarehouse
+                datawarehouse.store_historical_data("NSE_INDEX|Nifty 50", historical_data)
+                
+                # Calculate technical indicators
+                from technical_indicators import TechnicalIndicators
+                indicators = TechnicalIndicators.calculate_all_indicators(historical_data)
+                
+                # Store indicators in datawarehouse
+                datawarehouse.store_technical_indicators("NSE_INDEX|Nifty 50", indicators)
+                logger.info("✓ Technical indicators calculated and stored")
+                
+                return historical_data, indicators
+            else:
+                logger.warning(f"No {timeframe} historical data available")
+                return None, {}
+                
+        except Exception as e:
+            logger.error(f"Error fetching {timeframe} historical data: {e}")
+            return None, {}
+    
+    def _display_technical_indicators_in_grid3(self, timeframe="Hourly"):
         """Fetch and display technical indicators in Grid 3"""
         try:
-            # Fetch 3 months of historical data and calculate indicators
-            historical_data, indicators = self.fetch_3_months_historical_data()
+            # Fetch historical data and calculate indicators based on timeframe
+            historical_data, indicators = self.fetch_historical_data_for_timeframe(timeframe)
             
             if historical_data and indicators and self.chart_app:
                 # Display technical indicators in Grid 3
                 self.chart_app.display_technical_indicators(historical_data, indicators)
-                logger.info("✓ Technical indicators displayed in Grid 3")
+                logger.info(f"✓ Technical indicators displayed in Grid 3 for {timeframe} timeframe")
             else:
-                logger.warning("No historical data or indicators available for Grid 3")
+                logger.warning(f"No historical data or indicators available for Grid 3 ({timeframe})")
                 
         except Exception as e:
             logger.error(f"Error displaying technical indicators in Grid 3: {e}")
@@ -858,6 +914,17 @@ class MarketDataApp:
             # Also set main app reference in the chart visualizer
             self.chart_app.chart._main_app = self
             
+            # Fetch initial technical indicators now that main app reference is set
+            try:
+                logger.info("Fetching initial technical indicators for Grid 3...")
+                # Get the current timeframe from the dropdown if available
+                initial_timeframe = "Hourly"  # Default
+                if hasattr(self.chart_app, 'timeframe_var') and self.chart_app.timeframe_var:
+                    initial_timeframe = self.chart_app.timeframe_var.get()
+                self._display_technical_indicators_in_grid3(timeframe=initial_timeframe)
+            except Exception as e:
+                logger.error(f"Error fetching initial technical indicators: {e}")
+            
             logger.info("Starting chart application...")
             
             # Set datawarehouse reference in chart visualizer (regardless of weekend/holiday)
@@ -909,12 +976,7 @@ class MarketDataApp:
                 except Exception as fallback_error:
                     logger.error(f"Error in fallback chart display: {fallback_error}")
             
-            # Fetch and display technical indicators in Grid 3
-            try:
-                logger.info("Fetching technical indicators for Grid 3...")
-                self._display_technical_indicators_in_grid3()
-            except Exception as e:
-                logger.error(f"Error fetching technical indicators: {e}")
+            # Technical indicators will be fetched automatically by the UI initialization
             
             # Override the window close handler to include cleanup
             def cleanup_and_close():
@@ -1037,38 +1099,91 @@ class MarketDataApp:
                 logger.warning("No positions received from server")
                 return
             
-            # Create a set of server position trading symbols for quick lookup
+            # Create sets for both trading symbols and instrument tokens for lookup
             server_symbols = set()
-            for pos in server_positions:
-                trading_symbol = pos.get('trading_symbol', '')
+            server_tokens = set()
+            logger.info(f"Server positions received: {len(server_positions)} positions")
+            for i, pos in enumerate(server_positions):
+                trading_symbol = pos.get('_trading_symbol', '')
+                instrument_token = pos.get('_instrument_token', '') or pos.get('instrumentToken', '') or pos.get('instrument_key', '')
+                
                 if trading_symbol:
                     server_symbols.add(trading_symbol)
+                if instrument_token:
+                    server_tokens.add(str(instrument_token))
+                
+                # Log first few positions for debugging
+                if i < 5:
+                    logger.info(f"Server position {i+1}: trading_symbol='{trading_symbol}', instrument_token='{instrument_token}'")
+            
+            logger.info(f"Server symbols set: {list(server_symbols)}")
+            logger.info(f"Server tokens set: {list(server_tokens)}")
             
             # Check for missing positions and show dialogs
             missing_count = 0
             closed_count = 0
             
             for trade in open_trades:
+                logger.info(f"Checking trade {trade.trade_id} with {len(trade.legs)} legs")
                 for leg_index, leg in enumerate(trade.legs):
                     if not leg.is_open():
                         continue  # Skip closed legs
                     
+                    logger.info(f"Checking leg {leg_index+1}: instrument='{leg.instrument}', instrument_name='{leg.instrument_name}'")
+                    
                     # Try different matching strategies
                     leg_found = False
+                    matched_symbol = None
                     
-                    # Direct match
+                    # Direct match - check both trading symbols and instrument tokens
                     if leg.instrument in server_symbols:
                         leg_found = True
+                        matched_symbol = leg.instrument
+                        logger.info(f"✓ Direct match found (symbol): {leg.instrument}")
                     elif leg.instrument_name in server_symbols:
                         leg_found = True
+                        matched_symbol = leg.instrument_name
+                        logger.info(f"✓ Direct match found (symbol): {leg.instrument_name}")
+                    elif leg.instrument in server_tokens:
+                        leg_found = True
+                        matched_symbol = leg.instrument
+                        logger.info(f"✓ Direct match found (token): {leg.instrument}")
+                    elif str(leg.instrument) in server_tokens:
+                        leg_found = True
+                        matched_symbol = leg.instrument
+                        logger.info(f"✓ Direct match found (token str): {leg.instrument}")
                     else:
-                        # Partial match - check if any server position contains the leg instrument
-                        for server_symbol in server_symbols:
-                            if (leg.instrument in server_symbol or 
-                                server_symbol in leg.instrument or
-                                leg.instrument_name in server_symbol or
-                                server_symbol in leg.instrument_name):
-                                leg_found = True
+                        # Enhanced partial match - check various patterns
+                        # Check both server symbols and tokens
+                        all_server_items = list(server_symbols) + list(server_tokens)
+                        
+                        for server_item in all_server_items:
+                            # Check if any part of the leg matches any part of server item
+                            leg_parts = [leg.instrument, leg.instrument_name]
+                            server_parts = [server_item]
+                            
+                            # Also try splitting by common delimiters
+                            for delimiter in [' ', '-', '_', '|']:
+                                if delimiter in leg.instrument:
+                                    leg_parts.extend(leg.instrument.split(delimiter))
+                                if delimiter in leg.instrument_name:
+                                    leg_parts.extend(leg.instrument_name.split(delimiter))
+                                if delimiter in server_item:
+                                    server_parts.extend(server_item.split(delimiter))
+                            
+                            # Check for any overlap
+                            for leg_part in leg_parts:
+                                for server_part in server_parts:
+                                    if (leg_part and server_part and 
+                                        (leg_part in server_part or server_part in leg_part) and
+                                        len(leg_part) > 3 and len(server_part) > 3):  # Avoid matching very short strings
+                                        leg_found = True
+                                        matched_symbol = server_item
+                                        logger.info(f"✓ Partial match found: '{leg_part}' in '{server_part}' (server: {server_item})")
+                                        break
+                                if leg_found:
+                                    break
+                            if leg_found:
                                 break
                     
                     if not leg_found:

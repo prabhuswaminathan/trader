@@ -832,6 +832,10 @@ class LiveChartVisualizer:
                 # Display time as-is (assuming data is already in local timezone)
                 return dt.strftime('%H:%M')
             
+            # Initialize locators outside conditional blocks to avoid UnboundLocalError
+            minute_locator = mdates.MinuteLocator(interval=15)
+            hour_locator = mdates.HourLocator(interval=1)
+            
             # Set up time formatting based on data range
             if time_range.total_seconds() <= 3600:  # Less than 1 hour
                 # Create custom 5-minute intervals starting from 9:21
@@ -851,11 +855,9 @@ class LiveChartVisualizer:
                 self.price_ax.set_xticks([mdates.date2num(t) for t in ticks])
             elif time_range.total_seconds() <= 14400:  # Less than 4 hours
                 # Show 15-minute intervals
-                minute_locator = mdates.MinuteLocator(interval=15)
                 self.price_ax.xaxis.set_major_locator(minute_locator)
             else:
                 # Show 1-hour intervals
-                hour_locator = mdates.HourLocator(interval=1)
                 self.price_ax.xaxis.set_major_locator(hour_locator)
             
             # Apply the time formatter
@@ -889,7 +891,8 @@ class LiveChartVisualizer:
             
             # Force matplotlib to update the axis
             if time_range.total_seconds() <= 3600:
-                self.price_ax.xaxis.set_major_locator(minute_locator)
+                # For 1-hour range, use custom ticks (already set above)
+                pass  # Custom ticks are already set above
             elif time_range.total_seconds() <= 14400:
                 self.price_ax.xaxis.set_major_locator(minute_locator)
             else:
@@ -2271,7 +2274,7 @@ class TkinterChartApp:
             from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
             from matplotlib.figure import Figure
             
-            self.tech_fig = Figure(figsize=(8, 3.4), dpi=100)
+            self.tech_fig = Figure(figsize=(8, 2.8), dpi=100)
             self.tech_ax = self.tech_fig.add_subplot(111)
             
             # Create canvas - fixed height, no vertical expansion
@@ -2293,7 +2296,30 @@ class TkinterChartApp:
             # Add a visible border to make the table frame more prominent
             table_frame.configure(relief="solid", borderwidth=2)
             
-            # Add refresh button and timestamp
+            # Add timeframe dropdown to top left corner of chart frame
+            timeframe_frame = ttk.Frame(chart_frame)
+            timeframe_frame.pack(side=tk.TOP, anchor=tk.NW, padx=5, pady=5)
+            
+            # Timeframe dropdown
+            ttk.Label(timeframe_frame, text="Timeframe:", font=("Arial", 8)).pack(side=tk.LEFT, padx=(0, 5))
+            self.timeframe_var = tk.StringVar(value="Hourly")
+            self.timeframe_dropdown = ttk.Combobox(timeframe_frame, textvariable=self.timeframe_var, 
+                                                 values=["5 Minute", "15 Minute", "Hourly", "Daily"],
+                                                 state="readonly", width=12)
+            self.timeframe_dropdown.pack(side=tk.LEFT)
+            
+            # Try multiple event bindings for better compatibility
+            self.timeframe_dropdown.bind("<<ComboboxSelected>>", self._on_timeframe_changed)
+            self.timeframe_dropdown.bind("<FocusOut>", self._on_timeframe_changed)
+            self.timeframe_dropdown.bind("<Button-1>", lambda e: self.logger.info("Dropdown clicked"))
+            self.timeframe_dropdown.bind("<KeyRelease>", self._on_timeframe_changed)
+            
+            # Debug logging
+            self.logger.info(f"Timeframe dropdown created with values: {self.timeframe_dropdown['values']}")
+            self.logger.info(f"Initial timeframe value: {self.timeframe_var.get()}")
+            self.logger.info("Multiple event bindings added to dropdown")
+            
+            # Add refresh button and timestamp to table frame
             button_frame = ttk.Frame(table_frame)
             button_frame.pack(fill=tk.X, pady=(0, 5))
             
@@ -2307,6 +2333,11 @@ class TkinterChartApp:
                                       command=self._refresh_technical_indicators)
             refresh_button.pack(side=tk.RIGHT)
             
+            # Test button for timeframe change
+            test_button = ttk.Button(button_frame, text="Test 5Min", 
+                                   command=lambda: self._test_timeframe_change())
+            test_button.pack(side=tk.RIGHT, padx=(0, 5))
+            
             # Create table for technical indicators
             self._create_technical_table(table_frame)
             
@@ -2314,6 +2345,34 @@ class TkinterChartApp:
             
         except Exception as e:
             self.logger.error(f"Error initializing Grid 3 content: {e}")
+    
+    def _fetch_initial_technical_indicators(self):
+        """Fetch initial technical indicators after UI is ready"""
+        try:
+            # Get the current timeframe from the dropdown
+            initial_timeframe = "Hourly"  # Default
+            if hasattr(self, 'timeframe_var') and self.timeframe_var:
+                initial_timeframe = self.timeframe_var.get()
+            
+            self.logger.info(f"Fetching initial technical indicators for {initial_timeframe} timeframe...")
+            
+            # Call the main app to fetch technical indicators
+            if hasattr(self.chart, '_main_app') and self.chart._main_app:
+                self.chart._main_app._display_technical_indicators_in_grid3(timeframe=initial_timeframe)
+            else:
+                self.logger.warning("Main app reference not available for initial technical indicators fetch")
+                
+        except Exception as e:
+            self.logger.error(f"Error fetching initial technical indicators: {e}")
+    
+    def _test_timeframe_change(self):
+        """Test method to manually trigger timeframe change"""
+        try:
+            self.logger.info("Test button clicked - manually changing timeframe to 5 Minute")
+            self.timeframe_var.set("5 Minute")
+            self._on_timeframe_changed()
+        except Exception as e:
+            self.logger.error(f"Error in test timeframe change: {e}")
     
     def _create_technical_table(self, parent_frame):
         """Create table for displaying technical indicators data"""
@@ -2342,6 +2401,12 @@ class TkinterChartApp:
             scrollbar = ttk.Scrollbar(table_container, orient=tk.VERTICAL, command=self.tech_table.yview)
             self.tech_table.configure(yscrollcommand=scrollbar.set)
             
+            # Configure tags for row coloring
+            self.tech_table.tag_configure('buy', background='#d4edda', foreground='#155724')  # Light green background
+            self.tech_table.tag_configure('sell', background='#f8d7da', foreground='#721c24')  # Light red background
+            self.tech_table.tag_configure('hold', background='#fff3cd', foreground='#856404')  # Light yellow background
+            self.tech_table.tag_configure('neutral', background='#e2e3e5', foreground='#383d41')  # Light gray background
+            
             # Pack table and scrollbar
             self.tech_table.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
             scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
@@ -2352,6 +2417,35 @@ class TkinterChartApp:
         except Exception as e:
             self.logger.error(f"Error creating technical table: {e}")
     
+    def _get_signal_tag(self, signal):
+        """Get the appropriate tag for row coloring based on signal"""
+        if not signal:
+            return 'neutral'
+        
+        signal_lower = signal.lower()
+        if 'buy' in signal_lower and 'strong' in signal_lower:
+            return 'buy'
+        elif 'buy' in signal_lower:
+            return 'buy'
+        elif 'sell' in signal_lower and 'strong' in signal_lower:
+            return 'sell'
+        elif 'sell' in signal_lower:
+            return 'sell'
+        elif 'hold' in signal_lower:
+            return 'hold'
+        elif 'uptrend' in signal_lower:
+            return 'buy'
+        elif 'downtrend' in signal_lower:
+            return 'sell'
+        elif 'overbought' in signal_lower:
+            return 'sell'
+        elif 'oversold' in signal_lower:
+            return 'buy'
+        elif 'trend' in signal_lower:
+            return 'neutral'
+        else:
+            return 'neutral'
+    
     def _update_technical_table(self, indicators):
         """Update the technical indicators table with current values"""
         try:
@@ -2361,7 +2455,7 @@ class TkinterChartApp:
             
             if not indicators:
                 # Add placeholder message
-                self.tech_table.insert('', 'end', values=('No data available', '', '', ''))
+                self.tech_table.insert('', 'end', values=('No data available', '', '', ''), tags=('neutral',))
                 return
             
             # Get the most recent values (first in the list since data is most recent first)
@@ -2421,21 +2515,21 @@ class TkinterChartApp:
                     
                     # Create consolidated MA row
                     ma_display = f"20:{ma_20:.0f} 50:{ma_50:.0f} 100:{ma_100:.0f} 200:{ma_200:.0f}"
-                    table_data.append(('Moving Averages', ma_display, status, signal))
+                    table_data.append(('Moving Averages', ma_display, status, signal, self._get_signal_tag(signal)))
                 else:
                     # Fallback if no current price
                     ma_display = f"20:{ma_20:.0f} 50:{ma_50:.0f} 100:{ma_100:.0f} 200:{ma_200:.0f}"
-                    table_data.append(('Moving Averages', ma_display, 'Active', 'Trend'))
+                    table_data.append(('Moving Averages', ma_display, 'Active', 'Trend', self._get_signal_tag('Trend')))
             else:
                 # Add individual MAs if not all available
                 if ma_20 is not None:
-                    table_data.append(('MA 20', f'{ma_20:.2f}', 'Active', 'Trend'))
+                    table_data.append(('MA 20', f'{ma_20:.2f}', 'Active', 'Trend', self._get_signal_tag('Trend')))
                 if ma_50 is not None:
-                    table_data.append(('MA 50', f'{ma_50:.2f}', 'Active', 'Trend'))
+                    table_data.append(('MA 50', f'{ma_50:.2f}', 'Active', 'Trend', self._get_signal_tag('Trend')))
                 if ma_100 is not None:
-                    table_data.append(('MA 100', f'{ma_100:.2f}', 'Active', 'Trend'))
+                    table_data.append(('MA 100', f'{ma_100:.2f}', 'Active', 'Trend', self._get_signal_tag('Trend')))
                 if ma_200 is not None:
-                    table_data.append(('MA 200', f'{ma_200:.2f}', 'Active', 'Trend'))
+                    table_data.append(('MA 200', f'{ma_200:.2f}', 'Active', 'Trend', self._get_signal_tag('Trend')))
             
             # RSI
             if rsi is not None:
@@ -2448,7 +2542,7 @@ class TkinterChartApp:
                 else:
                     status = 'Neutral'
                     signal = 'HOLD'
-                table_data.append(('RSI (14)', f'{rsi:.2f}', status, signal))
+                table_data.append(('RSI (14)', f'{rsi:.2f}', status, signal, self._get_signal_tag(signal)))
             
             # MACD
             if macd is not None and macd_signal is not None:
@@ -2456,14 +2550,14 @@ class TkinterChartApp:
                     signal = 'BUY'
                 else:
                     signal = 'SELL'
-                table_data.append(('MACD', f'{macd:.2f}', 'Active', signal))
+                table_data.append(('MACD', f'{macd:.2f}', 'Active', signal, self._get_signal_tag(signal)))
             
             if macd_histogram is not None:
                 if macd_histogram > 0:
                     signal = 'BUY'
                 else:
                     signal = 'SELL'
-                table_data.append(('MACD Histogram', f'{macd_histogram:.2f}', 'Active', signal))
+                table_data.append(('MACD Histogram', f'{macd_histogram:.2f}', 'Active', signal, self._get_signal_tag(signal)))
             
             # Super Trend
             if super_trend is not None and super_trend_direction is not None:
@@ -2473,16 +2567,19 @@ class TkinterChartApp:
                 else:
                     status = 'Downtrend'
                     signal = 'SELL'
-                table_data.append(('Super Trend', f'{super_trend:.2f}', status, signal))
+                table_data.append(('Super Trend', f'{super_trend:.2f}', status, signal, self._get_signal_tag(signal)))
             
             # Insert data into table
             for data in table_data:
-                self.tech_table.insert('', 'end', values=data)
-                self.logger.info(f"Added table row: {data}")
+                # Extract values and tag
+                values = data[:4]  # First 4 elements are the actual values
+                tag = data[4] if len(data) > 4 else 'neutral'  # 5th element is the tag
+                self.tech_table.insert('', 'end', values=values, tags=(tag,))
+                self.logger.info(f"Added table row: {values} with tag: {tag}")
             
             # If no data available
             if not table_data:
-                self.tech_table.insert('', 'end', values=('No valid data', '', '', ''))
+                self.tech_table.insert('', 'end', values=('No valid data', '', '', ''), tags=('neutral',))
                 self.logger.warning("No table data available - showing placeholder")
             
             # Log table item count for debugging
@@ -2648,6 +2745,27 @@ class TkinterChartApp:
                 self.logger.warning("Main app reference not available for refreshing technical indicators")
         except Exception as e:
             self.logger.error(f"Error refreshing technical indicators: {e}")
+    
+    def _on_timeframe_changed(self, event=None):
+        """Handle timeframe dropdown selection change"""
+        try:
+            self.logger.info(f"Timeframe change event triggered! Event: {event}")
+            selected_timeframe = self.timeframe_var.get()
+            self.logger.info(f"Timeframe changed to: {selected_timeframe}")
+            self.logger.info(f"Available timeframes: {self.timeframe_dropdown['values']}")
+            self.logger.info(f"Current selection index: {self.timeframe_dropdown.current()}")
+            
+            # Refresh technical indicators with new timeframe
+            if hasattr(self.chart, '_main_app') and self.chart._main_app:
+                self.logger.info(f"Calling main app to refresh technical indicators for {selected_timeframe}")
+                self.chart._main_app._display_technical_indicators_in_grid3(timeframe=selected_timeframe)
+            else:
+                self.logger.warning("Main app reference not available for timeframe change")
+                
+        except Exception as e:
+            self.logger.error(f"Error handling timeframe change: {e}")
+            import traceback
+            traceback.print_exc()
     
     
     def display_technical_indicators(self, historical_data, indicators):
