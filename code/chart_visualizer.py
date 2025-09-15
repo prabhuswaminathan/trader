@@ -779,6 +779,84 @@ class LiveChartVisualizer:
         except Exception as e:
             self.logger.error(f"Error drawing latest price line: {e}")
     
+    def _update_live_price_line_only(self):
+        """Update only the live price line without redrawing the entire chart"""
+        try:
+            # Get the latest price from datawarehouse
+            latest_price = None
+            if hasattr(self, 'datawarehouse') and self.datawarehouse:
+                # Get the primary instrument (Nifty 50)
+                primary_instrument = 'NSE_INDEX|Nifty 50'
+                latest_price = self.datawarehouse.get_latest_price(primary_instrument)
+            
+            if latest_price is not None and self.price_ax:
+                # Check if price has changed significantly to avoid unnecessary updates
+                if hasattr(self, '_last_price_line_value'):
+                    price_change = abs(latest_price - self._last_price_line_value)
+                    # Only update if price changed by more than 0.1 points
+                    if price_change < 0.1:
+                        return
+                
+                # Store the current price for comparison
+                self._last_price_line_value = latest_price
+                
+                # Remove existing price line and text if they exist
+                self._remove_existing_price_line()
+                
+                # Get current x-axis limits
+                xlim = self.price_ax.get_xlim()
+                
+                # Draw new horizontal line for latest price
+                self.price_ax.axhline(y=latest_price, color='red', linestyle='--', linewidth=2, alpha=0.8, label='Latest Price')
+                
+                # Add price text on the right side of the chart
+                right_x = xlim[1] - (xlim[1] - xlim[0]) * 0.02  # 2% from right edge
+                self.price_ax.text(right_x, latest_price, f'₹{latest_price:.2f}', 
+                                 ha='right', va='center', fontsize=10, fontweight='bold',
+                                 bbox=dict(boxstyle='round,pad=0.3', facecolor='red', alpha=0.8, edgecolor='darkred'),
+                                 color='white')
+                
+                # Update legend to include latest price
+                self.price_ax.legend(loc='upper left', fontsize=8)
+                
+                # Force matplotlib to redraw only the changes
+                if hasattr(self, 'fig') and self.fig:
+                    self.fig.canvas.draw_idle()
+                
+                self.logger.debug(f"Updated live price line at {latest_price}")
+            
+        except Exception as e:
+            self.logger.error(f"Error updating live price line: {e}")
+    
+    def _remove_existing_price_line(self):
+        """Remove existing price line and text to avoid duplicates"""
+        try:
+            if not self.price_ax:
+                return
+            
+            # Remove horizontal lines (axhline creates Line2D objects)
+            lines_to_remove = []
+            for line in self.price_ax.lines:
+                if (hasattr(line, 'get_linestyle') and line.get_linestyle() == '--' and 
+                    hasattr(line, 'get_color') and line.get_color() == 'red'):
+                    lines_to_remove.append(line)
+            
+            for line in lines_to_remove:
+                line.remove()
+            
+            # Remove text objects that look like price labels
+            texts_to_remove = []
+            for text in self.price_ax.texts:
+                if (hasattr(text, 'get_text') and '₹' in str(text.get_text()) and
+                    hasattr(text, 'get_bbox_patch') and text.get_bbox_patch() is not None):
+                    texts_to_remove.append(text)
+            
+            for text in texts_to_remove:
+                text.remove()
+                
+        except Exception as e:
+            self.logger.error(f"Error removing existing price line: {e}")
+    
     def _format_x_axis_time(self):
         """Format X-axis to display time with appropriate intervals"""
         try:
@@ -1969,10 +2047,15 @@ class TkinterChartApp:
         try:
             # Only update for Nifty 50 (primary instrument)
             if instrument_key == 'NSE_INDEX|Nifty 50':
-                # Force chart update to redraw with latest price line
-                if hasattr(self.chart, 'force_chart_update'):
-                    self.chart.force_chart_update()
-                    self.logger.debug(f"Updated Grid 1 with latest price: {price}")
+                # Use selective update to avoid blinking
+                if hasattr(self.chart, '_update_live_price_line_only'):
+                    self.chart._update_live_price_line_only()
+                    self.logger.debug(f"Updated Grid 1 live price line: {price}")
+                else:
+                    # Fallback to full update if selective method not available
+                    if hasattr(self.chart, 'force_chart_update'):
+                        self.chart.force_chart_update()
+                        self.logger.debug(f"Updated Grid 1 with latest price (full update): {price}")
             
         except Exception as e:
             self.logger.error(f"Error updating Grid 1 with latest price: {e}")
