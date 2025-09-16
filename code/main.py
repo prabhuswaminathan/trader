@@ -46,7 +46,7 @@ class MarketDataApp:
         # Technical indicators refresh timer
         self.tech_refresh_timer_thread: Optional[threading.Thread] = None
         self.tech_refresh_timer_running = False
-        self.tech_refresh_interval = 3600  # 1 hour in seconds
+        self.tech_refresh_interval = 900  # 1 hour in seconds
         self.market_start_time = dt_time(9, 15)  # 9:15 AM
         self.market_end_time = dt_time(15, 30)   # 3:30 PM
         
@@ -174,27 +174,37 @@ class MarketDataApp:
     def start_live_data(self):
         """Start live data streaming and chart visualization"""
         try:
+            logger.info(f"Starting live data streaming for {self.broker_type}...")
+            
             if not self.agent:
                 raise RuntimeError("No agent initialized")
             
             # Connect to live data
+            logger.info("Connecting to live data feed...")
             if not self.agent.connect_live_data():
                 raise RuntimeError("Failed to connect to live data feed")
+            logger.info("Successfully connected to live data feed")
             
             # Add chart callback
+            logger.info("Adding live data callback...")
             self.agent.add_live_data_callback(self._on_live_data)
+            logger.info("Live data callback added successfully")
             
             # Subscribe to instruments
             instrument_keys = list(self.instruments[self.broker_type].keys())
+            logger.info(f"Subscribing to instruments: {instrument_keys}")
             if not self.agent.subscribe_live_data(instrument_keys):
                 raise RuntimeError("Failed to subscribe to live data")
+            logger.info("Successfully subscribed to live data")
             
             # Datawarehouse reference is already set in run_chart_app
             
             # Start chart
+            logger.info("Starting chart...")
             self.chart_visualizer.start_chart()
+            logger.info("Chart started successfully")
             
-            logger.info(f"Started live data streaming for {self.broker_type}")
+            logger.info(f"✓ Live data streaming started successfully for {self.broker_type}")
             
         except Exception as e:
             logger.error(f"Failed to start live data: {e}")
@@ -218,6 +228,7 @@ class MarketDataApp:
         """Callback function to handle live data updates"""
         try:
             self._log_live_feed(f"Received live data: {type(data)} - {str(data)[:200]}...")
+            logger.info(f"Live data callback triggered - Broker: {self.broker_type}, Data type: {type(data)}")
             
             # Process data based on broker type (only updates datawarehouse)
             if self.broker_type == "upstox":
@@ -520,6 +531,14 @@ class MarketDataApp:
         except Exception as e:
             logger.error(f"Error refreshing technical indicators in Grid 3: {e}")
     
+    def manual_refresh_technical_indicators(self):
+        """Manually trigger technical indicators refresh for testing"""
+        try:
+            logger.info("Manual technical indicators refresh triggered...")
+            self._refresh_technical_indicators()
+        except Exception as e:
+            logger.error(f"Error in manual technical indicators refresh: {e}")
+    
     def fetch_and_display_historical_data(self):
         """Fetch historical data from broker and display in chart"""
         try:
@@ -638,6 +657,8 @@ class MarketDataApp:
         try:
             # Check if it's after market close (3:45 PM)
             current_time = datetime.now().time()
+            logger.info(f"Processing Upstox data at {current_time.strftime('%H:%M:%S')}")
+            
             if self._is_after_market_close(current_time):
                 self._log_live_feed(f"Market close detected at {current_time.strftime('%H:%M:%S')} - stopping live feed processing")
                 # Disconnect from live feed
@@ -647,6 +668,7 @@ class MarketDataApp:
             
             # Log the received data for debugging
             self._log_live_feed(f"Processing Upstox data: {type(data)} - {str(data)[:100]}...")
+            logger.info(f"Upstox data type: {type(data)}, Keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
             
             # Check if data is valid
             if data is None:
@@ -656,14 +678,21 @@ class MarketDataApp:
             # Check if data contains "feeds" object
             if not isinstance(data, dict) or 'feeds' not in data:
                 self._log_live_feed("No 'feeds' object found in response, skipping processing")
+                logger.warning(f"Expected 'feeds' object in data, got keys: {list(data.keys()) if isinstance(data, dict) else 'Not a dict'}")
                 return
             
             feeds = data.get('feeds', {})
             if not feeds:
                 self._log_live_feed("Empty 'feeds' object, skipping processing")
+                logger.warning("Empty 'feeds' object received")
                 return
             
             self._log_live_feed(f"Processing {len(feeds)} feed entries")
+            logger.info(f"Processing {len(feeds)} feed entries: {list(feeds.keys())}")
+            
+            # Log available instruments for debugging
+            available_instruments = list(self.instruments[self.broker_type].keys())
+            logger.info(f"Available instruments for matching: {available_instruments}")
             
             # Process each feed entry
             for instrument_name, feed_data in feeds.items():
@@ -693,20 +722,37 @@ class MarketDataApp:
                         # Map instrument name to our instrument key
                         instrument_key = None
                         
-                        # Try to match with existing instruments
+                        # Try to match with existing instruments using more specific matching
                         for key in self.instruments[self.broker_type].keys():
-                            if key.upper() in instrument_name.upper():
+                            # Extract the display name from the key for comparison
+                            display_name = self.instruments[self.broker_type][key]
+                            
+                            # Check if instrument name contains the display name or key
+                            if (display_name.upper() in instrument_name.upper() or 
+                                key.upper() in instrument_name.upper()):
                                 instrument_key = key
+                                self._log_live_feed(f"Matched {instrument_name} to {instrument_key} ({display_name})")
                                 break
                         
-                        # If no specific instrument found, use the first one (NIFTY)
+                        # If no specific instrument found, skip this feed entry
                         if instrument_key is None:
-                            instrument_key = list(self.instruments[self.broker_type].keys())[0]
-                            self._log_live_feed(f"No specific instrument found for {instrument_name}, using default: {instrument_key}")
+                            self._log_live_feed(f"No matching instrument found for {instrument_name}, skipping")
+                            continue
                         
                         # Store the latest price in datawarehouse for P&L calculations
                         datawarehouse.store_latest_price(instrument_key, price, volume, 'live_feed')
                         self._log_live_feed(f"✓ Updated latest price for {instrument_key}: {price} (from {instrument_name})")
+                        
+                        # Special logging for India VIX
+                        if "VIX" in instrument_key.upper() or "VIX" in instrument_name.upper():
+                            logger.info(f"🎯 India VIX data processed: {instrument_name} -> {instrument_key} = {price}")
+                        
+                        # Verify the price was stored
+                        stored_price = datawarehouse.get_latest_price(instrument_key)
+                        if stored_price == price:
+                            logger.info(f"✓ Verified: Price {price} stored successfully in datawarehouse for {instrument_key}")
+                        else:
+                            logger.warning(f"✗ Price storage verification failed: Expected {price}, got {stored_price}")
                         
                     except (ValueError, TypeError) as e:
                         self._log_live_feed(f"Error converting price for {instrument_name}: {e}")
@@ -992,6 +1038,12 @@ class MarketDataApp:
             # Set datawarehouse reference in chart visualizer (regardless of weekend/holiday)
             logger.info("Setting datawarehouse reference in chart visualizer")
             self.chart_visualizer.set_datawarehouse(datawarehouse)
+            
+            # Verify datawarehouse reference is set
+            if hasattr(self.chart_visualizer, 'datawarehouse') and self.chart_visualizer.datawarehouse:
+                logger.info("✓ Datawarehouse reference set successfully in chart visualizer")
+            else:
+                logger.error("✗ Failed to set datawarehouse reference in chart visualizer")
             
             # Auto-start the chart and timer
             logger.info("Auto-starting chart and timer...")

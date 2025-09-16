@@ -2661,8 +2661,10 @@ class TkinterChartApp:
             if macd is not None and macd_signal is not None:
                 if macd > macd_signal:
                     signal = 'BUY'
-                else:
+                elif macd < macd_signal:
                     signal = 'SELL'
+                else:
+                    signal = 'NEUTRAL'
                 table_data.append(('MACD', f'{macd:.2f}', 'Active', signal, self._get_signal_tag(signal)))
             
             if macd_histogram is not None:
@@ -2762,13 +2764,14 @@ class TkinterChartApp:
                 signals['ma'] = 0
             
             # 3. MACD Signal (0.25 weight)
-            if macd is not None:
-                if macd > 0:
-                    signals['macd'] = 1
-                elif macd < 0:
-                    signals['macd'] = -1
+            macd_signal = get_latest_value('macd_signal')
+            if macd is not None and macd_signal is not None:
+                if macd > macd_signal:
+                    signals['macd'] = 1  # MACD above signal = BUY
+                elif macd < macd_signal:
+                    signals['macd'] = -1  # MACD below signal = SELL
                 else:
-                    signals['macd'] = 0
+                    signals['macd'] = 0  # MACD equal to signal = NEUTRAL
             else:
                 signals['macd'] = 0
             
